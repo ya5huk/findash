@@ -10,7 +10,7 @@ root_folder_id=<paste your vault folder ID here>
 
 Get the ID from your Drive folder's URL: `drive.google.com/drive/folders/<ID>`. Skills read it from `.secrets/drive` and pass it to rclone via `--drive-root-folder-id=<ID>`. **Do not hardcode it anywhere else.**
 
-Suggested human-readable folder name: `finance-vault`. The folder ID is the stable identifier; the name can change.
+Suggested human-readable folder name: `finance-vault`. The folder ID is the stable identifier; the name can change. The rclone remote should be named `gdrive`, because the project skills use paths like `gdrive:dump/`.
 
 ## Folder structure
 
