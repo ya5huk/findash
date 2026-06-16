@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/send_telegram.sh:*)",
+      "Bash(node scripts/fetch_bank.js:*)",
+      "Write(/inbox/**)",
+      "Edit(/inbox/**)"
+    ]
+  }
+}

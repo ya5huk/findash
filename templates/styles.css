@@ -1,0 +1,488 @@
+/* Finance Lodger — booky styles
+ *
+ * See docs/design-system.md for the rules. This file is the implementation.
+ */
+
+:root {
+  --parchment:    #f5efe3;
+  --ink:          #2a2520;
+  --muted-ink:    #6b6357;
+  --hairline:     #c9bfaa;
+  --ribbon:       #8b1a1a;
+  --faded-gold:   #a8924d;
+  --positive:     #3a5a40;
+  --negative:     #8b1a1a;
+  --measure:      880px;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: 'EB Garamond', Georgia, serif;
+  font-size: 17px;
+  line-height: 1.55;
+  /* subtle paper grain, very faint */
+  background-image:
+    radial-gradient(rgba(42, 37, 32, 0.015) 1px, transparent 1px);
+  background-size: 3px 3px;
+}
+
+body {
+  margin: 0;
+  padding: 56px 40px 80px;
+}
+
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+}
+
+/* ---------- header ---------- */
+
+header.masthead {
+  text-align: center;
+  margin-bottom: 56px;
+}
+
+.monogram {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  color: var(--faded-gold);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+
+.as-of-date {
+  color: var(--muted-ink);
+  font-style: italic;
+  font-size: 0.95rem;
+}
+
+.headline-amount {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 3.2rem;
+  font-weight: 500;
+  margin: 16px 0 4px;
+  font-variant-numeric: oldstyle-nums tabular-nums;
+  letter-spacing: -0.02em;
+  position: relative;
+  display: inline-block;
+}
+
+.headline-amount::after {
+  content: '';
+  display: block;
+  width: 60px;
+  height: 1px;
+  background: var(--ribbon);
+  margin: 12px auto 0;
+}
+
+/* ---------- sections (collapsibles) ---------- */
+
+details.section {
+  margin-bottom: 40px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 28px;
+}
+
+details.section > summary {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.5rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 24px;
+  user-select: none;
+}
+
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > summary::before {
+  content: '+';
+  display: inline-block;
+  width: 1.5em;
+  color: var(--faded-gold);
+  font-weight: 400;
+}
+details.section[open] > summary::before { content: '−'; }
+
+details.section h3 {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted-ink);
+  margin: 32px 0 12px;
+}
+
+/* ---------- breakdowns (collapsible h3-like sub-sections) ---------- */
+
+details.breakdown {
+  margin: 32px 0 12px;
+}
+
+details.breakdown > summary {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted-ink);
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 12px;
+  user-select: none;
+}
+
+details.breakdown > summary::-webkit-details-marker { display: none; }
+details.breakdown > summary::before {
+  content: '+';
+  display: inline-block;
+  width: 1.4em;
+  color: var(--faded-gold);
+  font-weight: 400;
+}
+details.breakdown[open] > summary::before { content: '−'; }
+
+.breakdown-static {
+  margin: 32px 0 12px;
+}
+
+.breakdown-static > .breakdown-title {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted-ink);
+  margin: 0 0 12px;
+}
+
+/* ---------- tables ---------- */
+
+table.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+}
+
+table.ledger th,
+table.ledger td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+table.ledger thead th {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.78rem;
+  color: var(--muted-ink);
+  border-bottom: 1px solid var(--ink);
+}
+
+table.ledger tbody tr:last-child td { border-bottom: none; }
+
+table.ledger td.num,
+table.ledger th.num {
+  text-align: right;
+  font-variant-numeric: oldstyle-nums tabular-nums;
+  white-space: nowrap;
+}
+
+table.ledger tfoot td {
+  border-top: 1px solid var(--ink);
+  border-bottom: none;
+  font-weight: 500;
+}
+
+/* ---------- Overview unified table: category divider, subtotal, grand total ---------- */
+
+table.ledger tr.category-row td {
+  background: rgba(168, 146, 77, 0.12);
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--hairline);
+  padding: 14px 12px 10px;
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--ink);
+}
+
+table.ledger tr.subtotal-row td {
+  padding: 10px 12px;
+  font-style: italic;
+  color: var(--muted-ink);
+  border-top: 1px dashed var(--hairline);
+  border-bottom: 1px solid var(--ink);
+  background: rgba(245, 239, 227, 0.55);
+}
+
+table.ledger tr.subtotal-row td.num {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: oldstyle-nums tabular-nums;
+}
+
+table.ledger tr.grand-total-row td {
+  padding: 22px 12px 10px;
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.25rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink);
+  border-top: 3px double var(--ink);
+  border-bottom: none;
+}
+
+table.ledger tr.grand-total-row td.num {
+  font-size: 1.45rem;
+  font-variant-numeric: oldstyle-nums tabular-nums;
+}
+
+td .currency-tag {
+  color: var(--muted-ink);
+  font-size: 0.82em;
+  margin-left: 0.4em;
+}
+
+td.amount.pos { color: var(--positive); }
+td.amount.neg { color: var(--negative); }
+
+/* ---------- charts ---------- */
+
+.chart-block {
+  margin: 28px 0;
+}
+
+.chart-title {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted-ink);
+  margin: 0 0 14px;
+}
+
+.chart-block canvas {
+  max-width: 100%;
+}
+
+.chart-block-pie {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.breakdown-note {
+  font-size: 0.88rem;
+  color: var(--muted-ink);
+  font-style: italic;
+  margin: -4px 0 14px;
+}
+
+.breakdown-note strong {
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 500;
+  font-variant-numeric: oldstyle-nums tabular-nums;
+}
+
+.row-charts {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  margin: 32px 0 12px;
+}
+
+.row-charts > .row-half {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .row-charts {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+.chart-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.chart-range {
+  background: transparent;
+  border: 1px solid var(--hairline);
+  color: var(--muted-ink);
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.chart-range:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.chart-range.active {
+  color: var(--parchment);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+/* ---------- flow-summary (overview compact block) ---------- */
+
+table.flow-summary {
+  margin: 0;
+}
+
+table.flow-summary thead th.num {
+  font-variant-numeric: oldstyle-nums tabular-nums;
+}
+
+table.flow-summary tbody td:first-child,
+table.flow-summary tfoot td:first-child {
+  color: var(--ink);
+}
+
+table.flow-summary tbody td.num,
+table.flow-summary tfoot td.num {
+  font-size: 1.02rem;
+}
+
+table.flow-summary td.num.pos { color: var(--positive); }
+table.flow-summary td.num.neg { color: var(--negative); }
+
+/* ---------- expenses (scrollable recent list) ---------- */
+
+.expenses-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  padding: 0 6px;
+  background: rgba(245, 239, 227, 0.6);
+}
+
+.expenses-scroll table.ledger {
+  margin-bottom: 0;
+}
+
+.expenses-scroll table.ledger thead th {
+  position: sticky;
+  top: 0;
+  background: var(--parchment);
+  z-index: 1;
+}
+
+/* ---------- footnotes / metadata ---------- */
+
+.footnote {
+  font-size: 0.85rem;
+  color: var(--muted-ink);
+  font-style: italic;
+  margin: 16px 0;
+}
+
+.muted { color: var(--muted-ink); }
+.heb { font-feature-settings: normal; }
+
+/* ---------- dividends ---------- */
+
+.dividend-yearly {
+  margin: 0 0 26px;
+}
+
+.dividend-yearly table.ledger {
+  max-width: 540px;
+}
+
+/* Current year gets a faint gold wash + a little weight so "got vs will get"
+   reads as the live row among the historical totals. */
+table.ledger tr.dividend-year-current td {
+  background: rgba(168, 146, 77, 0.10);
+  font-weight: 500;
+}
+
+table.ledger tr.dividend-est td {
+  font-style: italic;
+  color: var(--muted-ink);
+}
+
+table.ledger tr.dividend-est td.amount {
+  font-style: normal;
+}
+
+details.dividend-history {
+  margin-top: 8px;
+}
+
+details.dividend-history > summary {
+  cursor: pointer;
+  color: var(--muted-ink);
+  font-style: italic;
+  font-size: 0.85rem;
+  padding: 4px 0;
+  list-style: none;
+}
+
+details.dividend-history > summary::-webkit-details-marker { display: none; }
+details.dividend-history > summary::before {
+  content: '+';
+  display: inline-block;
+  width: 1.4em;
+  color: var(--faded-gold);
+}
+details.dividend-history[open] > summary::before { content: '−'; }
+
+/* ---------- sqlite tab ---------- */
+
+details.subsection {
+  margin: 8px 0;
+}
+
+details.subsection > summary {
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--muted-ink);
+  font-style: italic;
+}
+
+details.subsection table.ledger {
+  font-size: 0.88rem;
+}
+
+details.subsection .row-count {
+  color: var(--muted-ink);
+  font-style: italic;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 640px) {
+  body { padding: 28px 18px 60px; }
+  .headline-amount { font-size: 2.4rem; }
+  table.ledger { font-size: 0.92rem; }
+}
