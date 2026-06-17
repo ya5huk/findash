@@ -6,19 +6,21 @@ Personal finance system. Drive vault → SQLite → HTML dashboard. Three skills
 
 These shape every decision in this project. Re-read them when you're about to write code.
 
-1. **Judgment over scripts.** Claude's reasoning is the asset, not a parser script. Don't write categorization rules, don't pattern-match filenames mechanically, don't hard-code "if counterparty contains X then category is Y". The example: a 10,000 ILS outflow to Excellence is *not* an expense — it's a transfer to a brokerage you own. Only Claude can see that, because Claude reads both the bank statement and the brokerage's deposit confirmation in the same session. Scripts can't.
+1. **Public-project hygiene.** This repository is public. Keep committed code, docs, examples, and prompts generalized so they work for any user. Never include a real user's account numbers, balances, transaction amounts, counterparties, credentials, tokens, Drive IDs, personal identifiers, or local secret values. Provider names are fine when documenting supported integrations; user-specific financial details are not. Never print, paste, upload, or otherwise share secrets from `.secrets/`, `rclone.conf`, local databases, downloaded statements, or generated dashboards.
+
+2. **Judgment over scripts.** Claude's reasoning is the asset, not a parser script. Don't write categorization rules, don't pattern-match filenames mechanically, don't hard-code "if counterparty contains X then category is Y". The example: a large outflow to a brokerage you own is *not* an expense — it's a transfer. Only Claude can see that, because Claude reads both the bank statement and the brokerage's deposit confirmation in the same session. Scripts can't.
 
    Mechanical work (parsing XLSX bytes, executing SQL, decrypting a PDF with a known password, calling `rclone`) is fine as a script. *Interpretation* of what the data means is always done by Claude.
 
-2. **One topic per file.** A skill describes a flow; it never repeats schema details. The schema doc never repeats the Drive layout. If you're about to write the same fact in two places, stop and decide which file owns it.
+3. **One topic per file.** A skill describes a flow; it never repeats schema details. The schema doc never repeats the Drive layout. If you're about to write the same fact in two places, stop and decide which file owns it.
 
-3. **Instruct, don't hardcode.** Tell Claude what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the HTML template, the CSS.
+4. **Instruct, don't hardcode.** Tell Claude what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the HTML template, the CSS.
 
-4. **Money as integers.** All amounts stored as `amount_minor INTEGER`. Multiply on the way in, divide on the way out. Never `REAL` for money.
+5. **Money as integers.** All amounts stored as `amount_minor INTEGER`. Multiply on the way in, divide on the way out. Never `REAL` for money.
 
-5. **Audit trail is non-negotiable.** Every row in every fact table has a `source_doc_id` pointing back to `documents`. If a row can't cite its source, it doesn't get inserted.
+6. **Audit trail is non-negotiable.** Every row in every fact table has a `source_doc_id` pointing back to `documents`. If a row can't cite its source, it doesn't get inserted.
 
-6. **Idempotency.** Running any skill twice on the same Drive state must be a no-op. Dedup keys: `documents.drive_id` for files; `(account_id, as_of, component)` for balances; `(period_start, period_end, employer)` for payslips.
+7. **Idempotency.** Running any skill twice on the same Drive state must be a no-op. Dedup keys: `documents.drive_id` for files; `(account_id, as_of, component)` for balances; `(period_start, period_end, employer)` for payslips.
 
 ## What lives where
 
