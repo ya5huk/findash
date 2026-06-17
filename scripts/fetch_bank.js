@@ -28,6 +28,8 @@
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { stdin as input, stdout as output } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { CompanyTypes, createScraper } from 'israeli-bank-scrapers';
 import puppeteer from 'puppeteer';
@@ -93,11 +95,79 @@ function parseArgs(argv) {
   return out;
 }
 
-// Where to land the browser when seeding the profile in remote-debug mode.
+// Where to land the browser when seeding the profile in setup modes.
 const LOGIN_URLS = {
-  hapoalim: 'https://login.bankhapoalim.co.il/ng-portals/auth/he/',
+  hapoalim: 'https://login.bankhapoalim.co.il/cgi-bin/poalwwwc?reqName=getLogonPage',
   visaCal:  'https://www.cal-online.co.il/',
 };
+
+async function waitForSetupDone(browser, userDataDir) {
+  console.error('');
+  console.error('========================================================================');
+  console.error(`Setup browser is open. Profile dir: ${userDataDir}`);
+  console.error('');
+  console.error('In the browser:');
+  console.error('  1. Log in normally.');
+  console.error('  2. Complete any SMS OTP / CAPTCHA.');
+  console.error('  3. Approve or trust this device if the site offers it.');
+  console.error('  4. Wait until the account/dashboard page has loaded.');
+  console.error('');
+  console.error('Come back here and press Enter to close Chromium and flush the profile.');
+  console.error('========================================================================');
+  console.error('');
+
+  if (input.isTTY) {
+    const rl = createInterface({ input, output });
+    try {
+      await rl.question('Press Enter after setup is complete...');
+    } finally {
+      rl.close();
+    }
+  } else {
+    console.error('stdin is not interactive; waiting for Ctrl+C / SIGTERM.');
+    await new Promise((resolveWait) => {
+      const onSig = () => {
+        process.off('SIGINT', onSig);
+        process.off('SIGTERM', onSig);
+        resolveWait();
+      };
+      process.on('SIGINT', onSig);
+      process.on('SIGTERM', onSig);
+    });
+  }
+
+  console.error('Closing browser to flush profile...');
+  await browser.close().catch(() => {});
+  console.error(`Done. Trusted-device cookie should now live in ${userDataDir}`);
+  console.error('Test it with:  node scripts/fetch_bank.js --company=<same-company>');
+}
+
+async function runVisibleSetup(company, userDataDir) {
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      userDataDir,
+      headless: false,
+      args: ['--no-sandbox'],
+    });
+  } catch (e) {
+    console.error(`Puppeteer launch failed: ${e.message}`);
+    process.exit(2);
+  }
+
+  const pages = await browser.pages();
+  const page = pages[0] ?? await browser.newPage();
+  await page.setViewport({ width: 1280, height: 900 });
+  const loginUrl = LOGIN_URLS[company] ?? 'about:blank';
+  try {
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    console.error(`(navigation warning: ${e.message} - continuing anyway; you can navigate manually in the browser)`);
+  }
+
+  await waitForSetupDone(browser, userDataDir);
+  process.exit(0);
+}
 
 async function runRemoteDebugSetup(company, userDataDir, port) {
   let browser;
@@ -259,6 +329,13 @@ async function main() {
   }
 
   const userDataDir = profileDir(company);
+
+  // Visible local setup path: no creds, no scrape. Let the user seed or refresh
+  // trusted-device cookies without racing the scraper's login timeouts.
+  if (setup) {
+    await runVisibleSetup(company, userDataDir);
+    return;
+  }
 
   // Remote-debug seeding path: no creds, no scrape — just open the login page
   // headlessly and wait for the user to drive it via DevTools over SSH tunnel.

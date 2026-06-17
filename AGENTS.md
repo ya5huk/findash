@@ -97,12 +97,12 @@ These shape every decision in this project. Re-read them when you're about to wr
      ```
      node scripts/fetch_bank.js --company=hapoalim --setup
      ```
-     A real Chromium opens. Log in, complete the SMS OTP. Profile is saved to `~/.cache/findash/chromium-profile/hapoalim/` and re-used silently on subsequent runs.
+     A real Chromium opens. Log in, complete the SMS OTP, trust the device if offered, wait for the account page, then press Enter in the terminal. Profile is saved to `~/.cache/findash/chromium-profile/hapoalim/` and re-used silently on subsequent runs.
   6. One-time Cal browser run (Cal doesn't always 2FA, but `--setup` seeds the profile and lets a CAPTCHA be solved interactively if it appears):
      ```
      node scripts/fetch_bank.js --company=visaCal --setup
      ```
-     Profile is saved to `~/.cache/findash/chromium-profile/visaCal/`.
+     Log in if prompted, solve CAPTCHA/2FA if it appears, trust the device if offered, then press Enter in the terminal. Profile is saved to `~/.cache/findash/chromium-profile/visaCal/`.
   7. Either source whose `.secrets/<company>` file is absent is silently skipped — a one-bank user can still run the skill.
 
 ## Files to never commit

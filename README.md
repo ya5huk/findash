@@ -210,6 +210,20 @@ python3 scripts/bundle-assets.py
 
 Add `/fetch-bank-data` before sync only if you configured the optional bank fetch setup.
 
+If you want unattended daily runs to fetch from Hapoalim or Cal, seed the
+browser profiles once before scheduling cron:
+
+```bash
+node scripts/fetch_bank.js --company=hapoalim --setup
+node scripts/fetch_bank.js --company=visaCal --setup
+```
+
+In each browser window, log in, complete OTP/CAPTCHA, trust the device if
+offered, wait for the account page, then press Enter in the terminal. If a bank
+sends an OTP during a later unattended run, rerun the matching `--setup`
+command; the run will continue with stale fetched data until the profile is
+refreshed.
+
 For unattended daily runs, use:
 
 ```bash
@@ -219,7 +233,7 @@ CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
 ## Optional Integrations
 
 - Telegram: sends `output/dashboard.html` as a bot attachment. Without Telegram, rendering still writes the local dashboard. See [Telegram setup](docs/setup.md#telegram-optional).
-- Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
+- Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
 - Password-protected payslips: requires `qpdf` and `.secrets/pdf-passwords`. Without it, skip payslip PDFs or add the password file later.
 
 ## Docs

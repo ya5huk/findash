@@ -230,12 +230,19 @@ EOF
 chmod 600 .secrets/cal
 ```
 
-Seed browser profiles once. This lets you solve OTP/CAPTCHA interactively and reuse trusted-device cookies:
+Seed browser profiles once for every configured source. This step is required
+before unattended cron/launchd runs can fetch from that source. It lets you
+solve OTP/CAPTCHA interactively and reuse trusted-device cookies:
 
 ```bash
 node scripts/fetch_bank.js --company=hapoalim --setup
 node scripts/fetch_bank.js --company=visaCal --setup
 ```
+
+The setup command opens Chromium and waits. In the browser, log in, complete
+OTP/CAPTCHA, approve or trust the device if the site offers it, and wait for the
+account/dashboard page. Then return to the terminal and press Enter so Chromium
+closes cleanly and the profile is flushed to disk.
 
 Then Claude can run:
 
@@ -243,7 +250,10 @@ Then Claude can run:
 /fetch-bank-data
 ```
 
-If one source is not configured, the skill skips it. If the bank forces a fresh OTP later, rerun the relevant `--setup` command.
+If one source is not configured, the skill skips it. If the bank sends an OTP
+or CAPTCHA during a later unattended run, the fetch step is expected to fail
+best-effort; rerun the relevant `--setup` command to refresh the trusted-device
+profile, then rerun the daily flow.
 
 ## Payslip Passwords Optional
 
@@ -267,7 +277,18 @@ chmod 600 .secrets/pdf-passwords
 
 ## Daily Run Optional
 
-After the interactive flow works, the daily wrapper can run all three skills unattended:
+After the interactive flow works, the daily wrapper can run all three skills unattended.
+
+Before scheduling it, verify:
+
+- `rclone.conf`, `.secrets/drive`, and `data/finance.db` are present.
+- Telegram is configured if you expect a Telegram attachment.
+- `templates/vendor/` exists from `python3 scripts/bundle-assets.py`.
+- `scripts/node_modules/` exists from `cd scripts && npm install`.
+- For every configured bank/card source, the matching `--setup` command above
+  has completed at least once.
+
+Test the exact wrapper manually:
 
 ```bash
 CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
