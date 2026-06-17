@@ -3,7 +3,7 @@
 Claude skills for turning personal finance documents into an accurate SQLite-backed dashboard.
 
 <p align="center">
-  <img alt="FinDash dashboard overview" src="docs/images/dashboard-overview.png" width="920">
+  <img alt="FinDash dashboard overview" src="docs/images/dashboard-overview.png" width="680">
 </p>
 
 <p align="center">
