@@ -279,12 +279,21 @@ chmod 600 .secrets/pdf-passwords
 
 After the interactive flow works, the daily wrapper can run all three skills unattended.
 
+`claude -p` cannot ask for approvals while running from cron. Keep broad,
+machine-specific permissions in `.claude/settings.local.json` (gitignored), not
+in public docs or committed settings. If a manual wrapper test says commands
+like `rclone`, `sqlite3`, `python3`, or `curl` require approval, copy the
+working allowlist from a trusted local checkout or create a local settings file
+that allows those commands for this project.
+
 Before scheduling it, verify:
 
 - `rclone.conf`, `.secrets/drive`, and `data/finance.db` are present.
 - Telegram is configured if you expect a Telegram attachment.
 - `templates/vendor/` exists from `python3 scripts/bundle-assets.py`.
 - `scripts/node_modules/` exists from `cd scripts && npm install`.
+- `.claude/settings.local.json` exists locally with unattended permissions for
+  the mechanical commands used by the flow.
 - For every configured bank/card source, the matching `--setup` command above
   has completed at least once.
 

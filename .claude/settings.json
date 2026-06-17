@@ -3,8 +3,22 @@
     "allow": [
       "Bash(scripts/send_telegram.sh:*)",
       "Bash(node scripts/fetch_bank.js:*)",
+      "Bash(rclone --config ./rclone.conf:*)",
+      "Bash(sqlite3 data/finance.db:*)",
+      "Bash(python3 scripts/xlsx_to_rows.py:*)",
+      "Bash(python3 scripts/refresh_prices.py:*)",
+      "Bash(python3 scripts/yahoo_dividends.py:*)",
+      "Bash(python3 scripts/render_dashboard.py:*)",
+      "Bash(qpdf:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm -f inbox:*)",
+      "Bash(rm -rf inbox:*)",
       "Write(/inbox/**)",
-      "Edit(/inbox/**)"
+      "Edit(/inbox/**)",
+      "Write(inbox/**)",
+      "Edit(inbox/**)",
+      "Write(data/last_sync_summary.md)",
+      "Edit(data/last_sync_summary.md)"
     ]
   }
 }
