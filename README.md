@@ -13,9 +13,12 @@ A Claude Code plugin for turning personal finance documents into an accurate SQL
   <img alt="Privacy first" src="https://img.shields.io/badge/privacy-local%20secrets-2a211d?style=for-the-badge">
 </p>
 
-FinDash is a Claude Code plugin (named `findash`) bundling a set of skills plus a small deterministic toolchain. The skills reason over messy real-world finance records like bank statements, payslips, brokerage screenshots, deposits, transfers, and card charges. The scripts do the mechanical work: parse files, update SQLite, fetch prices, render HTML, and optionally send the result as a Telegram dashboard.
+FinDash is a Claude Code plugin (`findash`) bundling a set of skills plus a small deterministic toolchain:
 
-Telegram delivery is useful but optional; the dashboard is always written locally as HTML. Automatic bank/card fetching is useful but optional. The core loop is: put source documents in a Google Drive vault, ask Claude to sync them into SQLite, then render a self-contained dashboard.
+- **Skills reason** over messy real-world records — bank statements, payslips, brokerage screenshots, deposits, transfers, card charges.
+- **Scripts do the mechanics** — parse files, update SQLite, fetch prices, render HTML, send to Telegram.
+
+The core loop: drop source documents in a Google Drive vault → ask Claude to sync them into SQLite → render a self-contained dashboard. Telegram delivery and automatic bank/card fetch are both optional; the dashboard is always written locally as HTML.
 
 ## What It Does
 
@@ -133,6 +136,7 @@ FinDash is operated through the plugin's namespaced skills. The two new entry po
 | `/findash:sync-finance-data` | Yes | Reads the Drive vault, applies Claude's judgment to source documents, and writes audited rows into SQLite. |
 | `/findash:render-finance-dashboard` | Yes | Renders `output/dashboard.html` from SQLite and optionally sends it to Telegram. |
 | `/findash:fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into Drive `dump/`. |
+| `/findash:fetch-investments` | Optional · interactive | Ingests your Interactive Brokers trade history (plus a reconcile snapshot) into SQLite via the official IBKR connector. Hands-on only — not part of the unattended daily run. |
 | `/findash:findash-doctor` | Recommended | Audits local setup and auto-fixes safe missing pieces. |
 
 Skills live in [`skills/`](skills) and the plugin manifest in [`.claude-plugin/`](.claude-plugin). Claude Code loads them when you run `claude --plugin-dir .` from the repo root.
@@ -255,6 +259,7 @@ You don't have to clone to use FinDash. From any Claude Code session:
 - Telegram: sends `output/dashboard.html` as a bot attachment. Without Telegram, rendering still writes the local dashboard. See [Telegram setup](docs/setup.md#telegram-optional).
 - Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
 - Password-protected payslips: requires `qpdf` and a `[pdf-passwords]` section in `.secrets/findash`. Without it, skip payslip PDFs or add the passwords later.
+- Interactive Brokers: ingests your IBKR **trade history** onto a mapped account (so you stop screenshotting trades), plus a reconciliation snapshot, via Anthropic's official **IBKR connector** — added through Claude's connector directory, not findash config. Interactive-only: run `/findash:fetch-investments` by hand (then re-render); it is not part of the unattended daily run. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
 
 ## Docs
 

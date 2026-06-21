@@ -28,6 +28,7 @@ claude --plugin-dir .
 /findash:sync-finance-data
 /findash:render-finance-dashboard
 /findash:fetch-bank-data
+/findash:fetch-investments
 ```
 
 `/findash:setup` is the guided path for a first-time setup; it auto-fixes the safe pieces and walks you through the rest. `/findash:daily-run` runs the whole flow once everything is configured.
@@ -285,6 +286,42 @@ or CAPTCHA during a later unattended run, the fetch step is expected to fail
 best-effort; rerun the relevant `--setup` command to refresh the trusted-device
 profile, then rerun the daily flow.
 
+## Interactive Brokers (IBKR) Portfolio Optional
+
+You do not need IBKR to use FinDash. If you have an Interactive Brokers account, `fetch-investments` pulls your IBKR **trade history** straight into SQLite — mapped onto a findash account you choose — so holdings, cost basis, and the stocks-vs-S&P benchmark stay current without screenshots. It also writes a positions snapshot for reconciliation, and pulls cash balances.
+
+IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive Brokers connector** from Claude's own connector directory, and it's **interactive-only** — the connector authenticates solely in a hands-on Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended daily run. There's **no password** in `.secrets/findash`; you log in to IBKR through Claude's connector flow.
+
+1. **Add the IBKR connector once (needs a browser).** In Claude:
+
+   `+` → **Connectors** → **Add connector** → **Browse connectors** → search **"ibkr"** → **Interactive Brokers (IBKR)** (listed under *Anthropic & Partners*) → log in with your IBKR credentials and approve.
+
+   Then confirm it's live:
+
+   ```text
+   /mcp
+   ```
+
+   It should show `Interactive Brokers (IBKR) · connected`. Restart Claude Code after adding the connector so the session picks it up. The connector appears in Claude Code only when you're signed in with your **Claude.ai subscription** (not an `ANTHROPIC_API_KEY`).
+
+2. **Map IBKR to a findash account, in `[ibkr]`.** IBKR attaches to one of your existing findash accounts rather than getting its own — often an existing brokerage, since a broker that's an IBKR wrapper (e.g. some Israeli brokers) would otherwise double-count net worth. `/findash:setup` (or `/findash:fetch-investments` on first run) lists your accounts and helps you pick; paste the chosen name here. `account_ids` / `base_currency` stay optional:
+
+   ```ini
+   [ibkr]
+   account_name=<existing or new findash account name>
+   # Optional — only for multiple IBKR accounts or a non-default base currency:
+   # account_ids=<comma-separated IBKR account ids>
+   # base_currency=ILS
+   ```
+
+3. **Pull your trades.** In an interactive session:
+
+   ```text
+   /findash:fetch-investments
+   ```
+
+   It ingests your IBKR trades onto the mapped account (deduped by trade id), writes a reconciliation positions snapshot + cash, then pushes the DB to Drive; re-render to see it. The skill is **read-only** — if Claude prompts for any tool that places an order or moves funds, deny it. If the connector isn't connected, the skill just skips. See [docs/live-sources.md](./live-sources.md) for how the data maps into SQLite.
+
 ## Payslip Passwords Optional
 
 For password-protected PDFs, add a `[pdf-passwords]` section to `.secrets/findash`, one `<filename-pattern>=<password>` per line:
@@ -327,10 +364,13 @@ Before scheduling it, verify:
 - For every configured bank/card source, the matching `--setup` command above
   has completed at least once.
 
+(IBKR is not part of the unattended run, so it needs no setup here — it's a
+separate interactive step; see the IBKR section above.)
+
 Test the exact wrapper manually:
 
 ```bash
 CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
 ```
 
-It runs fetch best-effort, then sync, then render. Fetch failures are reported but do not block sync/render.
+It runs fetch best-effort, then sync, then render. Fetch failures are reported but do not block sync/render. (IBKR is not part of this unattended flow — it's a separate interactive step; see the IBKR section above.)

@@ -20,10 +20,20 @@ findash is now packaged as a Claude Code **plugin**.
 - **`setup` skill** — guided first-time onboarding: runs `findash-doctor`'s safe
   auto-fixes, then walks the user through the steps only a human can do (creating
   `.secrets/findash`, the rclone Google Drive OAuth, the bank-scraper browser seeding).
+- **`fetch-investments` skill** — ingests your Interactive Brokers **trade history**
+  straight into SQLite (deduped by `trades.external_id`), mapped onto a findash account you
+  choose, plus a reconciliation positions snapshot and cash — all as a live API source
+  (`source_doc_id = NULL`). IBKR auth uses Anthropic's official **Interactive Brokers
+  connector**, added via Claude's connector directory, so it is **interactive-only** and
+  is deliberately not part of the unattended `daily-run`. See `docs/live-sources.md`.
 - Shared, unit-tested secret parsers: `scripts/lib/secrets.mjs` and
   `scripts/lib/findash_secrets.py`.
 
 ### Changed
+- **Brokerage valuation is now data-driven.** The dashboard decides whether an account is
+  trade-fed (valued from its `trades` ledger) or snapshot-fed (valued from a `positions`
+  snapshot) by the data the account actually has, not a hardcoded account id — so any
+  brokerage, including a trade-fed IBKR mapping, is valued once with no double-counting.
 - **Skills moved** from `.claude/skills/` to `skills/` (the plugin layout); they are now
   namespaced `/findash:<skill>`.
 - **`scripts/run_daily.sh`** now loads the plugin and runs

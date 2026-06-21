@@ -90,6 +90,7 @@ CREATE TABLE securities (
 );
 
 -- Buy/sell events. Positions are derived: SUM(shares * sign) per (account, security).
+-- external_id dedups live-source trades (e.g. the IBKR connector) that cite no document.
 CREATE TABLE trades (
   id              INTEGER PRIMARY KEY,
   date            TEXT NOT NULL,
@@ -100,10 +101,35 @@ CREATE TABLE trades (
   price_minor     INTEGER NOT NULL,                        -- per-share in minor units of `currency`
   fees_minor      INTEGER NOT NULL DEFAULT 0,
   currency        TEXT NOT NULL,
-  source_doc_id   INTEGER REFERENCES documents(id) ON DELETE SET NULL
+  source_doc_id   INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+  external_id     TEXT                                     -- live-source trade id (e.g. IBKR); NULL for document/screenshot trades
 );
 CREATE INDEX idx_trades_account_security ON trades(account_id, security_id);
 CREATE INDEX idx_trades_date ON trades(date);
+-- Connector-sourced trades (source_doc_id NULL) dedup on (account_id, external_id).
+-- Partial so the document/screenshot trades with external_id NULL never collide.
+CREATE UNIQUE INDEX idx_trades_external ON trades(account_id, external_id) WHERE external_id IS NOT NULL;
+
+-- Point-in-time position snapshots from a live brokerage API (e.g. the IBKR connector).
+-- The snapshot counterpart to `trades`: where `trades` is a per-event ledger from which
+-- positions are derived, these are holdings AS-REPORTED on a snapshot date, with no
+-- underlying event log. Use them only for accounts that have no `trades` rows.
+-- source_doc_id is NULL by design for live-API rows — the deliberate audit-trail
+-- exception (no Drive document); see docs/live-sources.md. Idempotency is the UNIQUE key.
+CREATE TABLE positions (
+  id                  INTEGER PRIMARY KEY,
+  account_id          INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  security_id         INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+  as_of               TEXT NOT NULL,                         -- ISO snapshot date
+  quantity            REAL NOT NULL,                         -- shares held (fractional supported)
+  avg_cost_minor      INTEGER,                               -- per-share cost basis, minor units of `currency`
+  market_price_minor  INTEGER,                               -- per-share last price, minor units
+  market_value_minor  INTEGER,                               -- position market value, minor units
+  currency            TEXT NOT NULL,
+  source_doc_id       INTEGER REFERENCES documents(id) ON DELETE SET NULL,  -- NULL for live-API rows
+  UNIQUE(account_id, security_id, as_of)
+);
+CREATE INDEX idx_positions_account_date ON positions(account_id, as_of);
 
 -- Daily price history for valuation + benchmark comparison.
 CREATE TABLE prices (

@@ -13,17 +13,21 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
   - `NULL` for plain accounts (bank, brokerage, cash).
   - `tagmul_employee | tagmul_employer | pitsuyim` for pension.
   - `tagmul_employee | tagmul_employer` for study fund (no severance).
+  - `cash_usd | cash_gbp | cash_ils | cash_<ccy>` for multi-currency brokerage cash (Hafenix, IBKR).
+- **Live-API sources** (e.g. IBKR via the `fetch-investments` skill) write fact rows with `source_doc_id = NULL` — the deliberate exception to the audit-trail rule. Idempotency then comes from each table's UNIQUE key, not a `documents` row. See [live-sources.md](./live-sources.md).
+- **Trade-fed vs snapshot-fed accounts.** An account with `trades` rows is *trade-fed* (positions derived from the ledger — true cost basis + the stocks-vs-S&P benchmark); an account with only `positions` rows is *snapshot-fed* (valued from the snapshot). The renderer decides this **by data**, never by a hardcoded account id — so the two paths never value the same holding twice.
 
 ## Tables, at a glance
 
 | Table | One row per | Notes |
 |---|---|---|
-| `documents` | source file ingested | natural key: `drive_id`. every fact links back via `source_doc_id` |
+| `documents` | source file ingested | natural key: `drive_id`. every fact links back via `source_doc_id` — except live-API sources (see [live-sources.md](./live-sources.md)) |
 | `accounts` | account / fund / card | `kind` is open vocab; new types don't need a new table |
 | `balances` | (account, as_of, component) snapshot | pension has 3 rows per snapshot |
 | `transactions` | money flow | use judgment for `category` and `counterparty` — see [doc-types.md](./doc-types.md) |
 | `securities` | tradable ticker | includes benchmarks (e.g. `SPY`) |
-| `trades` | buy/sell event | positions are derived, never stored |
+| `trades` | buy/sell event | positions are derived, never stored. `external_id` = live-source trade id (e.g. IBKR), `NULL` for document/screenshot trades; partial unique index `(account_id, external_id)` dedups connector re-runs. Connector trades carry `source_doc_id` NULL |
+| `positions` | (account, security, as_of) snapshot | as-reported holdings from a live API (e.g. IBKR); the snapshot counterpart to `trades`. For a trade-fed account it's a reconcile/bootstrap cross-check; it's the primary value source only for a snapshot-fed account (one with no `trades`). `source_doc_id` is NULL — see [live-sources.md](./live-sources.md) |
 | `prices` | (security, date) close | for valuation and benchmark comparison |
 | `fx_rates` | (date, base→quote) | reporting currency is ILS. `source` column: `'document'` = extracted from a Drive doc (the rate the user actually transacted at — authoritative, never overwritten by the Yahoo refresh); `'yahoo'` = filled by `scripts/refresh_prices.py` |
 | `payslips` | one payslip | structured columns for common bits |

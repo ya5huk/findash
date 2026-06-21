@@ -36,6 +36,15 @@ chat_id=<your numeric id, from @userinfobot>
 
 [pdf-passwords]
 <payslip-filename-pattern>=<password>
+
+[ibkr]
+# IBKR auth is the official Interactive Brokers connector you add in Claude (no
+# password here). account_name maps IBKR onto ONE findash account — you set it in
+# the IBKR step below. account_ids/base_currency are optional (multiple IBKR
+# accounts / non-default base currency).
+# account_name=<the findash account IBKR attaches to>
+# account_ids=<comma-separated IBKR account ids>
+# base_currency=ILS
 ```
 
 Then: `chmod 600 .secrets/findash`.
@@ -56,6 +65,18 @@ These need a browser or an interactive terminal — you cannot do them, so print
   node scripts/fetch_bank.js --company=visaCal --setup
   ```
   Log in, complete OTP / CAPTCHA, trust the device, then press Enter. The profile is saved under `~/.cache/findash/chromium-profile/<companyId>/` and reused silently afterward.
+- **IBKR portfolio (only if you use Interactive Brokers):** IBKR is **not** a findash MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory, and it's **interactive-only** (so it is never part of the unattended cron run).
+  1. **Add the connector once:** in Claude, `+` → **Connectors** → **Add connector** → **Browse connectors**, search **"ibkr"**, pick **Interactive Brokers (IBKR)** (under *Anthropic & Partners*), and log in with your IBKR credentials. Confirm with `/mcp` (`Interactive Brokers (IBKR) · connected`), and restart Claude Code so the session picks it up.
+  2. **Map IBKR onto a findash account.** Every fact row attaches to an *account*, so mapping IBKR to the wrong one double-counts your net worth or splits your portfolio. Crucially, **your IBKR holdings may already be tracked under another broker** — some Israeli brokers (e.g. a Phoenix/Hafenix wrapper) *are* IBKR underneath, so a *separate* IBKR account would count the same money twice. List your accounts and decide which one IBKR really is (attach), or pick a new name (create):
+     ```
+     sqlite3 data/finance.db 'SELECT id, name, kind, institution FROM accounts ORDER BY id'
+     ```
+     Then record the choice under `[ibkr]` in `.secrets/findash` (it's a plain account name, not a secret):
+     ```
+     [ibkr]
+     account_name=<the findash account name IBKR attaches to>
+     ```
+  3. **Pull your trades:** run `/findash:fetch-investments` in an interactive session. It ingests your IBKR trade history onto the mapped account (so you stop screenshotting trades) plus a reconciliation snapshot. It's read-only — deny any tool that would place an order or move funds. If `account_name` is unset it asks once and prints the line to paste. If you don't use IBKR, skip this entirely.
 
 ### 4. Re-run the doctor
 

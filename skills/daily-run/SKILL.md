@@ -17,7 +17,9 @@ You run the **entire** findash morning flow in one session: fetch fresh bank dat
 
 1. **Run the `fetch-bank-data` skill** — pull fresh transactions + balances from the banks, scrapers to completion in the foreground. **Best-effort:** if it fails for any reason (a bank forces a fresh OTP, a scraper times out, a login breaks), do NOT abort the run — note which source failed and why, then continue. See [`../fetch-bank-data/SKILL.md`](../fetch-bank-data/SKILL.md).
 2. **Run the `sync-finance-data` skill** — triage `dump/`, ingest everything new in the vault, reasoning carefully over each file. See [`../sync-finance-data/SKILL.md`](../sync-finance-data/SKILL.md).
-3. **Run the `render-finance-dashboard` skill** — render the dashboard, then deliver it with `scripts/send_telegram.sh` (do NOT construct an inline curl command). If step 1 failed, surface that on Telegram alongside the dashboard via `scripts/send_telegram.sh --note "<which source failed + short reason>"`, so the user knows the data may be stale. The run is complete only once the Telegram send has succeeded. See [`../render-finance-dashboard/SKILL.md`](../render-finance-dashboard/SKILL.md).
+3. **Run the `render-finance-dashboard` skill** — render the dashboard, then deliver it with `scripts/send_telegram.sh` (do NOT construct an inline curl command). If step 1 (fetch) failed, surface that on Telegram alongside the dashboard via `scripts/send_telegram.sh --note "<which source failed + short reason>"`, so the user knows the data may be stale. The run is complete only once the Telegram send has succeeded. See [`../render-finance-dashboard/SKILL.md`](../render-finance-dashboard/SKILL.md).
+
+> **IBKR is deliberately not in this flow.** Interactive Brokers data comes from the official IBKR connector in Claude, which only works in an **interactive** session (it can't authenticate from the unattended `claude -p` cron run). So `fetch-investments` is a manual step, not chained here — refresh holdings by hand with `/findash:fetch-investments` and then re-render. See [`../fetch-investments/SKILL.md`](../fetch-investments/SKILL.md).
 
 ## Report
 

@@ -24,11 +24,14 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 | 5 | Secrets | `.secrets/findash` exists + mode 600; note which `[sections]` are filled | Perms only |
 | 6 | npm deps | `scripts/node_modules/` populated | `cd scripts && npm install` |
 | 7 | Vendor | 3 files under `templates/vendor/` | `python3 scripts/bundle-assets.py` |
-| 8 | DB | `data/finance.db` + has tables | `sqlite3 data/finance.db < scripts/init-db.sql` |
+| 8 | DB | `data/finance.db` + has tables (incl. `positions`) | `sqlite3 data/finance.db < scripts/init-db.sql` (fresh DB only) |
 | 9 | Chromium profiles | `~/.cache/findash/chromium-profile/{hapoalim,visaCal}/` (only when matching secrets exist) | No |
 | 10 | Drive live | `rclone lsf` against vault root succeeds in 5 s | No |
+| 11 | IBKR connector | optional — the official Interactive Brokers connector is added in Claude (claude.ai), not findash config; interactive-only | No |
 
 Node: parse `node --version`; major ≥ 23, or major = 22 with patch ≥ 22.13.0. Perms: anything with non-zero group/others digit is wrong → `chmod 600`. For Drive live: read `root_folder_id=…` from `.secrets/findash` `[drive]`; if it's missing or the value is empty/placeholder/<20 chars, skip the live call and let check #4 own it.
+
+Positions table (#8): if `data/finance.db` exists but lacks the `positions` table (an older install), **don't** re-run `init-db.sql` against a populated DB — its plain `CREATE TABLE`s will error. The table is added idempotently on the next `/findash:fetch-investments` (or apply `scripts/init-db.sql`'s `positions` block by hand); note it under ⚠️ Optional, not a blocker. IBKR connector (#11): purely informational and **optional** — the official Interactive Brokers connector is added by the user via Claude's connector directory, not by findash, and is interactive-only, so never treat its absence as an install error. If it's visible in this session (`/mcp` shows `Interactive Brokers (IBKR) · connected`), note ✓ OK; otherwise a one-line ⚠️ Optional pointer ("add it via Claude → Connectors if you want portfolio snapshots"). Never print balances, account ids, or positions (principle #1).
 
 ## Auto-fix order
 
@@ -46,7 +49,7 @@ If the Drive live check's preconditions don't hold (rclone or rclone.conf missin
 ## Blocker vs Optional
 
 - **Blocker** = fetch / sync / render literally can't run. (`rclone`, `rclone.conf`, Drive root ID, `python3`, vendor assets, `qpdf` when unsure.)
-- **Optional** = one feature degrades. (the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent.)
+- **Optional** = one feature degrades. (the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent, the IBKR connector when not added/connected — gates the interactive investments snapshot.)
 - **Promotion:** chromium profile for a source becomes a blocker the moment that source's credentials land (a `[<source>]` section in `.secrets/findash`) — creds without a trusted cookie → SMS challenge.
 
 ## Report format
@@ -92,6 +95,7 @@ Example on a partially-set-up macOS box:
 ⚠️ Optional
   • .secrets/findash [cal] — only for fetching credit-card data
   • chromium-profile/visaCal — not blocking yet (no [cal] creds)
+  • IBKR connector — not connected; add it via Claude → Connectors for portfolio snapshots
 
 ✓ OK
   qpdf, python3 3.13, node 22.14.0, sqlite3, rclone.conf, Drive root ID,

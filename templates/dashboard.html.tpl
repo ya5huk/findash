@@ -94,6 +94,8 @@
       {{POSITIONS_TABLE}}
     </details>
 
+    {{IBKR_POSITIONS_TABLE}}
+
     <details class="breakdown" open>
       <summary>Dividends</summary>
       {{DIVIDENDS_YEARLY_SUMMARY}}

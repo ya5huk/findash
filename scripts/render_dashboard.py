@@ -501,40 +501,70 @@ def main() -> int:
         return total
 
     def brokerage_usd_deposits_at(as_of_str: str) -> float:
+        if primary_brokerage_id is None:
+            return 0.0
         r = cur.execute(
             """SELECT COALESCE(SUM(amount_minor),0) AS t FROM transactions
-               WHERE account_id=7 AND category IN ('deposit','transfer') AND amount_minor>0 AND date<=?""",
-            (as_of_str,),
+               WHERE account_id=? AND category IN ('deposit','transfer') AND amount_minor>0 AND date<=?""",
+            (primary_brokerage_id, as_of_str),
         ).fetchone()
         return r["t"] / 100.0
 
-    def hafenix_cash_at(as_of_str: str) -> dict[str, dict]:
-        """Per-currency Hafenix cash at as_of_str, in each currency's major units.
+    def snapshot_positions_at(account_id: int, as_of_str: str) -> list[dict]:
+        """Latest-on-or-before position snapshot for a snapshot-based brokerage
+        (e.g. IBKR). Returns the rows at the single most-recent as_of <= the
+        requested date, joined to securities, ordered by reported market value.
+        Empty when the account has no snapshot at/before that date — so dates
+        before the first snapshot contribute nothing (the account didn't exist
+        yet) and later dates carry the last snapshot forward, matching the
+        `balances_at` "latest snapshot ≤ date" semantics."""
+        snap = cur.execute(
+            "SELECT MAX(as_of) AS d FROM positions WHERE account_id=? AND as_of<=?",
+            (account_id, as_of_str),
+        ).fetchone()
+        snap_date = snap["d"] if snap else None
+        if not snap_date:
+            return []
+        rows = cur.execute(
+            """SELECT p.*, s.ticker AS ticker, s.name AS sec_name
+               FROM positions p JOIN securities s ON s.id = p.security_id
+               WHERE p.account_id=? AND p.as_of=?
+               ORDER BY p.market_value_minor DESC""",
+            (account_id, snap_date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def brokerage_cash_at(as_of_str: str) -> dict[str, dict]:
+        """Per-currency cash for the trade-fed brokerage (primary_brokerage_id) at
+        as_of_str, in each currency's major units. Returns {} when there is no
+        trade-fed brokerage yet.
 
         Anchors on the latest `cash_<ccy>` balance snapshot ≤ as_of_str (forward
         derivation); if no such snapshot exists, falls back to the earliest one
-        and back-derives. Adjusts the anchor by the net of transactions on
-        account 7 in that currency minus the cash-leg of buy trades on account 7
-        in that currency. Sells already write their proceeds into `transactions`
-        per `docs/doc-types.md` ("Brokerage sell screenshots"), so they are NOT
-        derived from `trades` here.
+        and back-derives. Adjusts the anchor by the net of transactions on the
+        brokerage in that currency minus the cash-leg of buy trades on the
+        brokerage in that currency. Sells already write their proceeds into
+        `transactions` per `docs/doc-types.md` ("Brokerage sell screenshots"), so
+        they are NOT derived from `trades` here.
         """
+        if primary_brokerage_id is None:
+            return {}
         out: dict[str, dict] = {}
         for ccy in ("USD", "GBP", "ILS"):
             component = f"cash_{ccy.lower()}"
             snap = cur.execute(
                 """SELECT amount_minor, as_of FROM balances
-                   WHERE account_id=7 AND component=? AND as_of<=?
+                   WHERE account_id=? AND component=? AND as_of<=?
                    ORDER BY as_of DESC LIMIT 1""",
-                (component, as_of_str),
+                (primary_brokerage_id, component, as_of_str),
             ).fetchone()
             forward = True
             if not snap:
                 snap = cur.execute(
                     """SELECT amount_minor, as_of FROM balances
-                       WHERE account_id=7 AND component=?
+                       WHERE account_id=? AND component=?
                        ORDER BY as_of ASC LIMIT 1""",
-                    (component,),
+                    (primary_brokerage_id, component),
                 ).fetchone()
                 forward = False
             if snap:
@@ -547,14 +577,15 @@ def main() -> int:
                 #   (b) activity exists (deposits/buys) but no snapshot yet → baseline 0 silently
                 #       undercounts. Fail loud so the user uploads a snapshot.
                 has_activity = cur.execute(
-                    "SELECT 1 FROM transactions WHERE account_id=7 AND currency=? "
-                    "UNION SELECT 1 FROM trades WHERE account_id=7 AND currency=? LIMIT 1",
-                    (ccy, ccy),
+                    "SELECT 1 FROM transactions WHERE account_id=? AND currency=? "
+                    "UNION SELECT 1 FROM trades WHERE account_id=? AND currency=? LIMIT 1",
+                    (primary_brokerage_id, ccy, primary_brokerage_id, ccy),
                 ).fetchone()
                 if has_activity:
+                    broker_name = accounts[primary_brokerage_id]["name"]
                     raise SystemExit(
-                        f"Hafenix {ccy} cash: activity exists in transactions/trades but "
-                        f"no balances snapshot has been ingested. Upload a Hafenix balance "
+                        f"{broker_name} {ccy} cash: activity exists in transactions/trades but "
+                        f"no balances snapshot has been ingested. Upload a brokerage balance "
                         f"screenshot for {ccy} so the cash baseline can be anchored."
                     )
                 baseline = 0.0
@@ -567,15 +598,15 @@ def main() -> int:
                 lo, hi, sign = as_of_str, anchor, -1.0
             txn_sum = cur.execute(
                 """SELECT COALESCE(SUM(amount_minor),0)/100.0 AS t FROM transactions
-                   WHERE account_id=7 AND currency=? AND date>? AND date<=?""",
-                (ccy, lo, hi),
+                   WHERE account_id=? AND currency=? AND date>? AND date<=?""",
+                (primary_brokerage_id, ccy, lo, hi),
             ).fetchone()["t"]
             buy_sum = cur.execute(
                 """SELECT COALESCE(SUM(shares*price_minor + fees_minor),0)/100.0 AS t
                    FROM trades
-                   WHERE account_id=7 AND side='buy' AND currency=?
+                   WHERE account_id=? AND side='buy' AND currency=?
                      AND date>? AND date<=?""",
-                (ccy, lo, hi),
+                (primary_brokerage_id, ccy, lo, hi),
             ).fetchone()["t"]
             out[ccy] = {
                 "amount": baseline + sign * (txn_sum - buy_sum),
@@ -589,6 +620,39 @@ def main() -> int:
         opened_on = account.get("opened_on")
         closed_on = account.get("closed_on")
         return (not opened_on or opened_on <= as_of_str) and (not closed_on or as_of_str < closed_on)
+
+    # Data-driven brokerage valuation routing (replaces the old hardcoded account 7).
+    # An account is TRADE-FED when it has any `trades` rows — positions are derived
+    # from the event ledger, giving true cost basis + the stocks-vs-S&P benchmark.
+    # A brokerage with only `positions` rows and no trades is SNAPSHOT-FED — holdings
+    # read as-reported from a live API (e.g. IBKR). The two sets are disjoint, so no
+    # holding is ever valued twice (see the `positions` comment in init-db.sql).
+    trade_fed_ids = {r["account_id"] for r in cur.execute(
+        "SELECT DISTINCT account_id FROM trades"
+    ).fetchall()}
+    trade_fed_brokerage_ids = [aid for aid, a in accounts.items()
+                               if a["kind"] == "brokerage" and aid in trade_fed_ids]
+    # The trade-fed brokerage whose per-account cash / deposits / label the sections
+    # below use (was the literal account 7). None when there's no trade history yet.
+    primary_brokerage_id = trade_fed_brokerage_ids[0] if trade_fed_brokerage_ids else None
+
+    # Snapshot-fed brokerages (e.g. IBKR mapped onto its own account): brokerage
+    # accounts with a positions snapshot and NO trades. Disjoint from the trade-fed
+    # set, so they never double-count. Additive + inert when empty. Guard on the
+    # `positions` table existing so a DB that predates it renders unchanged.
+    positions_table_exists = bool(cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"
+    ).fetchone())
+    snapshot_fed_ids = []
+    if positions_table_exists:
+        snapshot_fed_ids = [
+            a["id"] for a in accounts.values()
+            if a["kind"] == "brokerage" and a["id"] not in trade_fed_ids
+            and account_active_on(a, as_of)
+            and cur.execute(
+                "SELECT 1 FROM positions WHERE account_id=? LIMIT 1", (a["id"],)
+            ).fetchone()
+        ]
 
     # Hapoalim checking moved from account 2 to account 1. Historical manual cash
     # snapshots and official bank snapshots can overlap, so net worth should use
@@ -660,20 +724,56 @@ def main() -> int:
     nw_ils = 0.0
     latest = balances_at(as_of)
     for r in net_worth_balances_at(as_of):
-        if r["account_id"] == 7:
-            continue  # Hafenix cash is derived via hafenix_cash_at to include post-snapshot flows
+        if r["account_id"] == primary_brokerage_id:
+            continue  # brokerage cash is derived via brokerage_cash_at to include post-snapshot flows
         amt = r["amount_minor"] / 100.0
         if r["currency"] == "ILS":
             nw_ils += amt
         else:
             nw_ils += amt * latest_fx(r["currency"], "ILS", as_of)
     nw_ils += brokerage_market_value_ils
-    hafenix_cash_now = hafenix_cash_at(as_of)
-    for ccy, info in hafenix_cash_now.items():
+    brokerage_cash_now = brokerage_cash_at(as_of)
+    for ccy, info in brokerage_cash_now.items():
         amt = info["amount"]
         if abs(amt) < 0.01:
             continue
         nw_ils += amt if ccy == "ILS" else amt * latest_fx(ccy, "ILS", as_of)
+
+    # Snapshot brokerages (IBKR): value positions directly from the reported
+    # market value (no price lookup). IBKR cash is already in nw via the generic
+    # balance loop above (the trade-fed brokerage is the only one it skips), so only positions
+    # are added here. Capture per-account once so net worth and the Overview
+    # table use identical numbers. Inert when snapshot_fed_ids is empty.
+    snapshot_values: dict[int, dict] = {}
+    for aid in snapshot_fed_ids:
+        acct_pos = snapshot_positions_at(aid, as_of)
+        pos_ils = 0.0
+        for p in acct_pos:
+            if p["market_value_minor"] is None:
+                continue
+            native = p["market_value_minor"] / 100.0
+            ccy = p["currency"]
+            pos_ils += native if ccy in ("ILS", "ILA") else native * latest_fx(ccy, "ILS", as_of)
+        cash_ils = 0.0
+        cash_parts: list[str] = []
+        for b in latest:
+            if b["account_id"] != aid or not b["component"]:
+                continue
+            if not str(b["component"]).startswith("cash_"):
+                continue
+            amt = b["amount_minor"] / 100.0
+            if abs(amt) < 0.01:
+                continue
+            cash_ils += amt if b["currency"] == "ILS" else amt * latest_fx(b["currency"], "ILS", as_of)
+            cash_parts.append(f"{fmt_money(amt, 2)} {b['currency']}")
+        snapshot_values[aid] = {
+            "pos_rows": acct_pos,
+            "pos_ils": pos_ils,
+            "cash_ils": cash_ils,
+            "cash_parts": cash_parts,
+            "snap_date": acct_pos[0]["as_of"] if acct_pos else None,
+        }
+        nw_ils += pos_ils  # IBKR cash already counted by the generic balance loop
 
     net_worth_str = f"{nw_ils:,.0f} ILS"
 
@@ -706,26 +806,26 @@ def main() -> int:
             f'<td class="muted num">{h(b["as_of"])}</td></tr>'
         )
 
-    # Hafenix cash — multi-currency, derived from latest snapshot + post-snapshot flows
-    hafenix_parts: list[str] = []
-    hafenix_ils_sum = 0.0
-    hafenix_snap_dates: list[str] = []
+    # Trade-fed brokerage cash — multi-currency, derived from latest snapshot + post-snapshot flows
+    brokerage_cash_parts: list[str] = []
+    brokerage_cash_ils_sum = 0.0
+    brokerage_cash_snap_dates: list[str] = []
     for ccy in ("USD", "GBP", "ILS"):
-        info = hafenix_cash_now.get(ccy, {})
+        info = brokerage_cash_now.get(ccy, {})
         amt = info.get("amount", 0.0)
         if abs(amt) < 0.01:
             continue
-        hafenix_parts.append(f"{fmt_money(amt, 2)} {ccy}")
-        hafenix_ils_sum += amt if ccy == "ILS" else amt * latest_fx(ccy, "ILS", as_of)
+        brokerage_cash_parts.append(f"{fmt_money(amt, 2)} {ccy}")
+        brokerage_cash_ils_sum += amt if ccy == "ILS" else amt * latest_fx(ccy, "ILS", as_of)
         if info.get("snapshot_as_of"):
-            hafenix_snap_dates.append(info["snapshot_as_of"])
-    if hafenix_parts:
-        cash_total += hafenix_ils_sum
-        snap_disp = max(hafenix_snap_dates) if hafenix_snap_dates else "no snapshot"
+            brokerage_cash_snap_dates.append(info["snapshot_as_of"])
+    if brokerage_cash_parts:
+        cash_total += brokerage_cash_ils_sum
+        snap_disp = max(brokerage_cash_snap_dates) if brokerage_cash_snap_dates else "no snapshot"
         cash_rows.append(
-            f"<tr>{heb_td(accounts[7]['name'])}"
-            f'<td class="muted">{h(accounts[7]["institution"])} · {h(" + ".join(hafenix_parts))}</td>'
-            f"{money_td(hafenix_ils_sum, 'ILS')}"
+            f"<tr>{heb_td(accounts[primary_brokerage_id]['name'])}"
+            f'<td class="muted">{h(accounts[primary_brokerage_id]["institution"])} · {h(" + ".join(brokerage_cash_parts))}</td>'
+            f"{money_td(brokerage_cash_ils_sum, 'ILS')}"
             f'<td class="muted num">{h(snap_disp)}</td></tr>'
         )
 
@@ -795,9 +895,9 @@ def main() -> int:
             f'<td class="muted num">{h(b8["as_of"])}</td></tr>'
         )
 
-    # Hafenix Brokerage (account 7) — live market value
-    acc7 = accounts.get(7)
-    if acc7 and not acc7.get("closed_on"):
+    # Trade-fed brokerage (primary_brokerage_id) — live market value
+    acc_brokerage = accounts.get(primary_brokerage_id) if primary_brokerage_id is not None else None
+    if acc_brokerage and not acc_brokerage.get("closed_on"):
         cost_basis_ils = brokerage_cost_basis_ils
         mv_ils = brokerage_market_value_ils
         pnl_ils = mv_ils - cost_basis_ils
@@ -816,8 +916,8 @@ def main() -> int:
         else:
             pnl_usd_str = "—"
         inv_rows.append(
-            f"<tr>{heb_td(acc7['name'])}"
-            f'<td class="muted">{h(acc7["institution"])}'
+            f"<tr>{heb_td(acc_brokerage['name'])}"
+            f'<td class="muted">{h(acc_brokerage["institution"])}'
             f' <span class="muted">· {brokerage_usd_deposits:,.0f} USD deposited'
             f' · P/L {h(pnl_usd_str)} · {h(pnl_sign + format(abs(pnl_ils), ",.0f"))} ILS ({h(pnl_pct_str)})</span></td>'
             f"{money_td(mv_ils, 'ILS')}"
@@ -852,6 +952,26 @@ def main() -> int:
             f'<span class="muted">· uninvested {h(acc["currency"])} reserve</span></td>'
             f"{money_td(balance, acc['currency'])}"
             f'<td class="muted num">{h(as_of_row)}</td></tr>'
+        )
+
+    # Snapshot brokerages (IBKR) — positions valued from reported market value
+    # plus uninvested cash, one row per account. IBKR cash is NOT in the cash
+    # section (brokerage accounts are excluded there), so it rides this row;
+    # net worth counts the same cash via the generic balance loop, keeping the
+    # Overview grand total equal to the headline. Additive; inert without IBKR.
+    for aid in snapshot_fed_ids:
+        acc = accounts[aid]
+        v = snapshot_values[aid]
+        total_ils = v["pos_ils"] + v["cash_ils"]
+        if abs(total_ils) < 0.01:
+            continue
+        inv_total_ils += total_ils
+        cash_note = f' · {h(" + ".join(v["cash_parts"]))} cash' if v["cash_parts"] else ""
+        inv_rows.append(
+            f"<tr>{heb_td(acc['name'])}"
+            f'<td class="muted">{h(acc["institution"])}{cash_note}</td>'
+            f"{money_td(total_ils, 'ILS')}"
+            f'<td class="muted num">{h(v["snap_date"] or as_of)}</td></tr>'
         )
 
     # ----- 7b. Unified Overview table -----
@@ -1020,14 +1140,89 @@ def main() -> int:
     else:
         positions_table = '<p class="footnote"><em>No open positions.</em></p>'
 
+    # ----- 8b. Snapshot-fed brokerage positions — separate panel -----
+    # Snapshot holdings carry fewer columns than the trade-derived table (no Net
+    # cost / Last trade), so they get their own panel rather than being crammed
+    # into the wider trade-fed table. Values come straight from the reported
+    # market value. The whole panel (including its <details> wrapper) is the
+    # substitution value, so it renders to "" — nothing at all — when there are
+    # no snapshot-fed accounts.
+    ibkr_pos_rows: list[str] = []
+    for aid in snapshot_fed_ids:
+        acc = accounts[aid]
+        v = snapshot_values[aid]
+        if not v["pos_rows"]:
+            continue
+        ibkr_pos_rows.append(
+            f'<tr class="category-row"><td colspan="7">{h(acc["name"])} '
+            f'· {h(acc["institution"])} · snapshot {h(v["snap_date"] or "—")}</td></tr>'
+        )
+        for p in v["pos_rows"]:
+            ccy = p["currency"]
+            display_ccy = "ILS" if ccy == "ILA" else ccy
+            shares = p["quantity"]
+            shares_dec = 4 if abs(shares) < 1 else 2
+            mv_native = (p["market_value_minor"] / 100.0) if p["market_value_minor"] is not None else None
+            if mv_native is None:
+                mv_ils = None
+            elif ccy in ("ILS", "ILA"):
+                mv_ils = mv_native
+            else:
+                mv_ils = mv_native * latest_fx(ccy, "ILS", as_of)
+            avg_cost = (p["avg_cost_minor"] / 100.0) if p["avg_cost_minor"] is not None else None
+            cost_native = (avg_cost * shares) if avg_cost is not None else None
+            pnl_native = (mv_native - cost_native) if (mv_native is not None and cost_native is not None) else None
+            pnl_pct = (pnl_native / cost_native * 100.0) if (pnl_native is not None and cost_native) else None
+            avg_cost_cell = (
+                money_td(avg_cost, display_ccy, decimals=2)
+                if avg_cost is not None else '<td class="num muted">—</td>'
+            )
+            mv_native_cell = (
+                money_td(mv_native, display_ccy)
+                if mv_native is not None else '<td class="num muted">—</td>'
+            )
+            mv_ils_cell = (
+                money_td(mv_ils, "ILS")
+                if mv_ils is not None else '<td class="num muted">—</td>'
+            )
+            pnl_cell = (
+                money_td(pnl_native, display_ccy)
+                if pnl_native is not None else '<td class="num muted">—</td>'
+            )
+            ibkr_pos_rows.append(
+                f'<tr><td>{h(p["ticker"])}</td>'
+                f'{num_td(shares, shares_dec)}'
+                f'{avg_cost_cell}'
+                f'{mv_native_cell}'
+                f'{mv_ils_cell}'
+                f'{pnl_cell}'
+                f'{pct_td(pnl_pct)}</tr>'
+            )
+    if ibkr_pos_rows:
+        ibkr_positions_table = (
+            '<details class="breakdown" open>\n'
+            '      <summary>Live snapshot positions</summary>\n      '
+            + render_ledger(
+                [
+                    ("Ticker", ""), ("Shares", "num"),
+                    ("Avg cost", "num"), ("Mkt value", "num"),
+                    ("Mkt value (ILS)", "num"), ("P/L", "num"), ("%", "num"),
+                ],
+                ibkr_pos_rows,
+            )
+            + "\n    </details>"
+        )
+    else:
+        ibkr_positions_table = ""
+
     # ----- 9. Brokerage deposits (newest first) -----
 
     deposits = cur.execute("""
         SELECT date, amount_minor/100.0 AS amount, currency, counterparty, description
         FROM transactions
-        WHERE account_id=7 AND category IN ('deposit','transfer') AND amount_minor>0
+        WHERE account_id=? AND category IN ('deposit','transfer') AND amount_minor>0
         ORDER BY date DESC
-    """).fetchall()
+    """, (primary_brokerage_id,)).fetchall()
     deposits = [dict(r) for r in deposits]
 
     # Build cumulative from oldest→newest, then reverse so the table reads newest→oldest
@@ -1287,15 +1482,17 @@ def main() -> int:
         recorded_keys = {
             (r["ticker"], r["date"][:7])
             for r in recorded
-            if r.get("account_id") == 7 and r.get("ticker") and r["ticker"] != "—"
+            if r.get("account_id") in trade_fed_ids and r.get("ticker") and r["ticker"] != "—"
         }
 
         def latest_cash_snapshot_for(ccy: str) -> Optional[str]:
+            if primary_brokerage_id is None:
+                return None
             cash_ccy = "ILS" if ccy in ("ILS", "ILA") else ccy
             component = f"cash_{cash_ccy.lower()}"
             return cur.execute(
-                "SELECT MAX(as_of) FROM balances WHERE account_id=7 AND component=?",
-                (component,),
+                "SELECT MAX(as_of) FROM balances WHERE account_id=? AND component=?",
+                (primary_brokerage_id, component),
             ).fetchone()[0]
 
         estimated: list[dict] = []
@@ -1824,8 +2021,9 @@ def main() -> int:
     deposit_chart_rows = [dict(r) for r in cur.execute(
         """SELECT date, amount_minor/100.0 AS amount
            FROM transactions
-           WHERE account_id=7 AND category IN ('deposit','transfer') AND amount_minor>0
-           ORDER BY date"""
+           WHERE account_id=? AND category IN ('deposit','transfer') AND amount_minor>0
+           ORDER BY date""",
+        (primary_brokerage_id,)
     ).fetchall()]
     trade_rows_for_chart = [dict(r) for r in cur.execute(
         """SELECT t.date, t.security_id, t.side, t.shares, s.currency AS sec_ccy
@@ -1889,7 +2087,7 @@ def main() -> int:
         if usd_ils <= 0:
             return 0.0
         total = 0.0
-        for ccy, info in hafenix_cash_at(on_date).items():
+        for ccy, info in brokerage_cash_at(on_date).items():
             amount = info["amount"]
             if abs(amount) < 0.01:
                 continue
@@ -1923,8 +2121,8 @@ def main() -> int:
     for d in nw_dates:
         per_account: dict[str, float] = {}
         for r in net_worth_balances_at(d):
-            if r["account_id"] == 7:
-                continue  # Hafenix cash is derived via hafenix_cash_at to include post-snapshot flows
+            if r["account_id"] == primary_brokerage_id:
+                continue  # brokerage cash is derived via brokerage_cash_at to include post-snapshot flows
             acc_name = accounts[r["account_id"]]["name"]
             amt = r["amount_minor"] / 100.0
             ils = amt if r["currency"] == "ILS" else amt * latest_fx(r["currency"], "ILS", d)
@@ -1935,17 +2133,32 @@ def main() -> int:
             # honest cost basis (per-trade historical FX) instead of plotting a
             # partial market value.
             broker_ils = cost_basis_ils_at(d)
-        if broker_ils > 0:
-            per_account["Hafenix Brokerage"] = broker_ils
-        hafenix_cash_d = hafenix_cash_at(d)
-        hafenix_cash_ils_d = 0.0
-        for ccy, info in hafenix_cash_d.items():
+        if broker_ils > 0 and primary_brokerage_id is not None:
+            per_account[accounts[primary_brokerage_id]["name"]] = broker_ils
+        brokerage_cash_d = brokerage_cash_at(d)
+        brokerage_cash_ils_d = 0.0
+        for ccy, info in brokerage_cash_d.items():
             amt = info["amount"]
             if abs(amt) < 0.01:
                 continue
-            hafenix_cash_ils_d += amt if ccy == "ILS" else amt * latest_fx(ccy, "ILS", d)
-        if abs(hafenix_cash_ils_d) > 0.01:
-            per_account["Hafenix Cash"] = hafenix_cash_ils_d
+            brokerage_cash_ils_d += amt if ccy == "ILS" else amt * latest_fx(ccy, "ILS", d)
+        if abs(brokerage_cash_ils_d) > 0.01 and primary_brokerage_id is not None:
+            per_account[f'{accounts[primary_brokerage_id]["name"]} · cash'] = brokerage_cash_ils_d
+        # Snapshot brokerages (IBKR): add positions MV at this date (carried
+        # forward from the latest snapshot ≤ d; nothing before the first one).
+        # IBKR cash already merged in via the generic balance loop above, under
+        # the same account name, so the two combine into one series entry.
+        for aid in snapshot_fed_ids:
+            pos_ils_d = 0.0
+            for p in snapshot_positions_at(aid, d):
+                if p["market_value_minor"] is None:
+                    continue
+                native = p["market_value_minor"] / 100.0
+                ccy = p["currency"]
+                pos_ils_d += native if ccy in ("ILS", "ILA") else native * latest_fx(ccy, "ILS", d)
+            if abs(pos_ils_d) > 0.01:
+                nm = accounts[aid]["name"]
+                per_account[nm] = per_account.get(nm, 0.0) + pos_ils_d
         v = sum(per_account.values())
         nw_series_values.append(round(v, 2))
         nw_breakdowns.append(
@@ -2027,7 +2240,7 @@ def main() -> int:
     pay_gross = [r["gross_minor"] / 100.0 for r in pay_for_chart]
     pay_net = [r["net_minor"] / 100.0 for r in pay_for_chart]
 
-    fx_deposits_payload = build_fx_deposits_payload(cur)
+    fx_deposits_payload = build_fx_deposits_payload(cur, primary_brokerage_id)
 
     # ----- 13b. Dividends — display + timeseries + upcoming -----
 
@@ -2130,11 +2343,11 @@ def main() -> int:
         if with_status:
             st = r.get("status", "recorded")
             if st == "recorded" and r.get("confirmed"):
-                status_cell = '<td class="muted" title="Itemized from a Hafenix statement">✓ recorded</td>'
+                status_cell = '<td class="muted" title="Itemized from a brokerage statement">✓ recorded</td>'
             elif st == "recorded":
                 status_cell = '<td class="muted" title="Itemized — live estimate, not yet on a statement">recorded</td>'
             elif st == "absorbed":
-                status_cell = '<td class="muted" title="Paid on/before your last Hafenix snapshot — already folded into that cash balance (not double-counted)"><em>absorbed</em></td>'
+                status_cell = '<td class="muted" title="Paid on/before your last brokerage snapshot — already folded into that cash balance (not double-counted)"><em>absorbed</em></td>'
             else:
                 status_cell = '<td class="muted" title="Live Yahoo estimate — paid after your last snapshot, not yet reconciled"><em>est.</em></td>'
         confirmed_recorded = r.get("status") == "recorded" and r.get("confirmed", True)
@@ -2245,24 +2458,24 @@ def main() -> int:
         component = f"cash_{ccy.lower()}"
         snaps = cur.execute(
             """SELECT as_of, amount_minor/100.0 AS amount FROM balances
-               WHERE account_id=7 AND component=?
+               WHERE account_id=? AND component=?
                ORDER BY as_of ASC""",
-            (component,),
+            (primary_brokerage_id, component),
         ).fetchall()
         if len(snaps) < 2:
             continue
         prev, cur_snap = snaps[-2], snaps[-1]
         txn_sum = cur.execute(
             """SELECT COALESCE(SUM(amount_minor),0)/100.0 AS t FROM transactions
-               WHERE account_id=7 AND currency=? AND date>? AND date<=?""",
-            (ccy, prev["as_of"], cur_snap["as_of"]),
+               WHERE account_id=? AND currency=? AND date>? AND date<=?""",
+            (primary_brokerage_id, ccy, prev["as_of"], cur_snap["as_of"]),
         ).fetchone()["t"]
         buy_sum = cur.execute(
             """SELECT COALESCE(SUM(shares*price_minor + fees_minor),0)/100.0 AS t
                FROM trades
-               WHERE account_id=7 AND side='buy' AND currency=?
+               WHERE account_id=? AND side='buy' AND currency=?
                  AND date>? AND date<=?""",
-            (ccy, prev["as_of"], cur_snap["as_of"]),
+            (primary_brokerage_id, ccy, prev["as_of"], cur_snap["as_of"]),
         ).fetchone()["t"]
         captured = txn_sum - buy_sum
         actual = cur_snap["amount"] - prev["amount"]
@@ -2275,7 +2488,7 @@ def main() -> int:
         drift_banner_html = (
             '<div class="drift-banner" style="margin-top:10px;padding:6px 0;'
             'font-style:italic;font-size:13px;color:var(--muted-ink)">'
-            f'Hafenix drift since last snapshot: {html.escape(" · ".join(drift_msgs))} — likely a missing FX / deposit / sell doc.'
+            f'{html.escape(accounts[primary_brokerage_id]["name"])} drift since last snapshot: {html.escape(" · ".join(drift_msgs))} — likely a missing FX / deposit / sell doc.'
             '</div>'
         )
 
@@ -2287,6 +2500,7 @@ def main() -> int:
         "FLOW_SUMMARY": flow_summary_html,
         "OVERVIEW_FOOTNOTE": overview_footnote,
         "POSITIONS_TABLE": positions_table,
+        "IBKR_POSITIONS_TABLE": ibkr_positions_table,
         "DIVIDENDS_YEARLY_SUMMARY": div_yearly_summary_html,
         "DIVIDENDS_RECENT_5_TABLE": div_recent_5_html,
         "DIVIDENDS_RECENT_1Y_TABLE": div_recent_1y_html,
@@ -2355,11 +2569,11 @@ def main() -> int:
     return 0
 
 
-def build_fx_deposits_payload(cur: sqlite3.Cursor) -> dict:
+def build_fx_deposits_payload(cur: sqlite3.Cursor, primary_brokerage_id: Optional[int]) -> dict:
     """USD/ILS + GBP/ILS history with brokerage-deposit markers per currency.
 
     Lines come from `fx_rates` (already refreshed live this run). Markers come
-    from positive `deposit`/`transfer` transactions on account 7 (Hafenix);
+    from positive `deposit`/`transfer` transactions on the trade-fed brokerage;
     ILS deposits are omitted (no FX event to mark on the chart).
     """
     rows = cur.execute(
@@ -2381,8 +2595,9 @@ def build_fx_deposits_payload(cur: sqlite3.Cursor) -> dict:
     dep_rows = cur.execute(
         """SELECT date, amount_minor/100.0 AS amount, currency, counterparty, description
            FROM transactions
-           WHERE account_id=7 AND category IN ('deposit','transfer') AND amount_minor>0 AND currency IN ('USD','GBP')
-           ORDER BY date"""
+           WHERE account_id=? AND category IN ('deposit','transfer') AND amount_minor>0 AND currency IN ('USD','GBP')
+           ORDER BY date""",
+        (primary_brokerage_id,)
     ).fetchall()
     usd_deps: list[dict] = []
     gbp_deps: list[dict] = []
