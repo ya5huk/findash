@@ -9,10 +9,10 @@ You ingest new documents from the user's Google Drive finance vault into the loc
 
 ## Where things live
 
-- Drive folder ID: `.secrets/drive` (key `root_folder_id=…`, chmod 600). Folder structure: [`docs/drive-layout.md`](../../../docs/drive-layout.md).
-- SQLite schema + conventions: [`docs/sqlite-schema.md`](../../../docs/sqlite-schema.md)
-- How each doc type maps to tables + the folder-routing table: [`docs/doc-types.md`](../../../docs/doc-types.md)
-- Password for protected payslip PDFs: `.secrets/pdf-passwords` (one `pattern=password` line per file pattern)
+- Drive folder ID: the `[drive]` section of `.secrets/findash` (key `root_folder_id=…`, chmod 600). Folder structure: [`docs/drive-layout.md`](../../docs/drive-layout.md).
+- SQLite schema + conventions: [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md)
+- How each doc type maps to tables + the folder-routing table: [`docs/doc-types.md`](../../docs/doc-types.md)
+- Password for protected payslip PDFs: the `[pdf-passwords]` section of `.secrets/findash` (one `pattern=password` line per file pattern)
 - rclone config: `./rclone.conf` (always pass `--config ./rclone.conf` to rclone)
 - Local DB: `data/finance.db`
 - Work dir for transient downloads: `inbox/` (clean it up after each run)
@@ -24,7 +24,7 @@ You ingest new documents from the user's Google Drive finance vault into the loc
 Before scanning the rest of the vault, sort anything the user dropped in `<DRIVE_ROOT>/dump/`:
 
 - `rclone --config ./rclone.conf lsjson --drive-root-folder-id=<ROOT_ID> gdrive:dump/`
-- For each entry: download to `inbox/dump/<filename>`, inspect contents to determine doc_type (using your judgment + the catalogue in [`docs/doc-types.md`](../../../docs/doc-types.md)).
+- For each entry: download to `inbox/dump/<filename>`, inspect contents to determine doc_type (using your judgment + the catalogue in [`docs/doc-types.md`](../../docs/doc-types.md)).
 - Match doc_type against the "Folder routing" table. Choose a destination folder + new filename per the convention.
 - Move on Drive: `rclone --config ./rclone.conf moveto gdrive:dump/<orig> gdrive:<dest-folder>/<new-name>`. Drive preserves the file's `drive_id`, so any existing `documents` row stays valid.
 - If a file's `drive_id` already exists in `documents`, update `documents.drive_path` to the new path.
@@ -33,7 +33,7 @@ Before scanning the rest of the vault, sort anything the user dropped in `<DRIVE
 **Unfamiliar files create a new doc_type:**
 
 1. Propose a snake_case name (e.g. `insurance_statement`, `tax_certificate`), a destination folder under the vault, and a filename pattern.
-2. Append a row to the "Folder routing" table in [`docs/doc-types.md`](../../../docs/doc-types.md) and a short prose section describing what the type holds, how to read it, and which SQLite tables it populates.
+2. Append a row to the "Folder routing" table in [`docs/doc-types.md`](../../docs/doc-types.md) and a short prose section describing what the type holds, how to read it, and which SQLite tables it populates.
 3. Move + rename the file per the new convention.
 4. Mention every newly-created doc_type in the sync report: `Created doc_type 'X' → folder Y. See docs/doc-types.md.`
 
@@ -55,16 +55,16 @@ Query `documents.drive_id`. Skip anything already present.
 ### 4. Process each new file
 
 - Download to `inbox/` with `rclone copy --config ./rclone.conf --drive-root-folder-id=<ROOT_ID> gdrive:<path> ./inbox/`.
-- Classify by folder + filename (first pass), confirm by content (second pass). See [`docs/doc-types.md`](../../../docs/doc-types.md) for shapes.
+- Classify by folder + filename (first pass), confirm by content (second pass). See [`docs/doc-types.md`](../../docs/doc-types.md) for shapes.
 - Extract the data. The *how* depends on format:
   - PDF (unlocked) → use the Read tool with the local file path.
   - PDF (password-protected payslip) → `qpdf --password=<pw> --decrypt <file> <tmp>`, read `tmp`, delete `tmp`. If `qpdf` is missing tell the user to install it (`sudo apt install -y qpdf`).
   - XLSX → `python3 scripts/xlsx_to_rows.py <file>` returns JSON `{sheet, rows}` with Excel serial dates already converted to ISO.
   - JPG → use the Read tool with the image path; transcribe what you see.
-- Insert rows into the right tables (see [`docs/sqlite-schema.md`](../../../docs/sqlite-schema.md) for column conventions). Always include `source_doc_id` linking back to `documents`.
-- **Use judgment** when categorizing transactions and matching cross-document events. Read [`docs/doc-types.md`](../../../docs/doc-types.md) "Judgment calls" before doing any classification work.
+- Insert rows into the right tables (see [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) for column conventions). Always include `source_doc_id` linking back to `documents`.
+- **Use judgment** when categorizing transactions and matching cross-document events. Read [`docs/doc-types.md`](../../docs/doc-types.md) "Judgment calls" before doing any classification work.
 - **Closing balance:** for bank statements, read the running-balance column on the last row (Hapoalim XLSX → יתרה בש"ח). Do NOT sum the in-window transactions and call that the balance — that only works if the statement covers the account's entire lifetime. If no running-balance is visible, skip the `balances` insert and add a note to `documents.notes`.
-- **Hafenix balance screenshots:** when a Hafenix screenshot shows cash holdings per currency, insert one `balances` row per non-zero currency with `component='cash_usd' | 'cash_gbp' | 'cash_ils'`. See [`docs/doc-types.md`](../../../docs/doc-types.md) "Hafenix balance screenshot" for the field details. The renderer combines these snapshots with subsequent flows so cash stays accurate between uploads.
+- **Hafenix balance screenshots:** when a Hafenix screenshot shows cash holdings per currency, insert one `balances` row per non-zero currency with `component='cash_usd' | 'cash_gbp' | 'cash_ils'`. See [`docs/doc-types.md`](../../docs/doc-types.md) "Hafenix balance screenshot" for the field details. The renderer combines these snapshots with subsequent flows so cash stays accurate between uploads.
 - **Explicit FX rates in docs are authoritative.** When a doc shows the rate the user actually transacted at (e.g. a Hapoalim USD-purchase line "1,000 USD @ 3.30 ILS" on a day Yahoo closed 3.28), insert it into `fx_rates` with `source='document'`. Use `INSERT INTO fx_rates (...) VALUES (..., 'document') ON CONFLICT (date, base_currency, quote_currency) DO UPDATE SET rate=excluded.rate, source='document'` — docs always win over the Yahoo refresh. If the doc shows a converted ILS amount without naming the rate, derive it (`ils_amount / fx_amount`) and write it the same way.
 
 ### 5. Refresh price + FX cache
@@ -220,7 +220,7 @@ Backups: finance.db + finance-<timestamp>.db uploaded
 
 - **Transfers between the user's own accounts are not expenses.** Hapoalim → Excellence brokerage = `transfer`, not `expense`.
 - **Filename amounts are sanity checks, not truth.** Always trust the content.
-- **Pension/study-fund statements produce multi-component balance rows.** See [`docs/sqlite-schema.md`](../../../docs/sqlite-schema.md) for the `component` column.
+- **Pension/study-fund statements produce multi-component balance rows.** See [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) for the `component` column.
 - **OCR uncertainty: refuse over fabricate.** If a JPG number is unreadable, ask the user rather than guess.
 - **Idempotency:** running the skill twice should be a no-op (dedup via `documents.drive_id`; `dump/` is empty after the first triage).
 - **Atomicity:** if extraction fails halfway through a file, don't leave half its rows in the DB — wrap each file's inserts in a transaction. Insert into `documents` only after the file's rows commit successfully.

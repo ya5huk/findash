@@ -2,13 +2,14 @@
 
 ## Root
 
-The vault is a single Google Drive folder. Its **folder ID** is per-user and lives in [`.secrets/drive`](../.secrets/drive) (gitignored, chmod 600):
+The vault is a single Google Drive folder. Its **folder ID** is per-user and lives under the `[drive]` section of `.secrets/findash` (gitignored, chmod 600):
 
 ```
+[drive]
 root_folder_id=<paste your vault folder ID here>
 ```
 
-Get the ID from your Drive folder's URL: `drive.google.com/drive/folders/<ID>`. Skills read it from `.secrets/drive` and pass it to rclone via `--drive-root-folder-id=<ID>`. **Do not hardcode it anywhere else.**
+Get the ID from your Drive folder's URL: `drive.google.com/drive/folders/<ID>`. Skills read it from `.secrets/findash` and pass it to rclone via `--drive-root-folder-id=<ID>`. **Do not hardcode it anywhere else.**
 
 Suggested human-readable folder name: `finance-vault`. The folder ID is the stable identifier; the name can change. The rclone remote should be named `gdrive`, because the project skills use paths like `gdrive:dump/`.
 

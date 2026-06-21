@@ -1,6 +1,6 @@
 # FinDash
 
-Claude skills for turning personal finance documents into an accurate SQLite-backed dashboard.
+A Claude Code plugin for turning personal finance documents into an accurate SQLite-backed dashboard.
 
 <p align="center">
   <img alt="FinDash dashboard overview" src="docs/images/dashboard-overview.png" width="680">
@@ -13,7 +13,7 @@ Claude skills for turning personal finance documents into an accurate SQLite-bac
   <img alt="Privacy first" src="https://img.shields.io/badge/privacy-local%20secrets-2a211d?style=for-the-badge">
 </p>
 
-FinDash is a set of Claude Code project skills plus a small deterministic toolchain. The skills reason over messy real-world finance records like bank statements, payslips, brokerage screenshots, deposits, transfers, and card charges. The scripts do the mechanical work: parse files, update SQLite, fetch prices, render HTML, and optionally send the result as a Telegram dashboard.
+FinDash is a Claude Code plugin (named `findash`) bundling a set of skills plus a small deterministic toolchain. The skills reason over messy real-world finance records like bank statements, payslips, brokerage screenshots, deposits, transfers, and card charges. The scripts do the mechanical work: parse files, update SQLite, fetch prices, render HTML, and optionally send the result as a Telegram dashboard.
 
 Telegram delivery is useful but optional; the dashboard is always written locally as HTML. Automatic bank/card fetching is useful but optional. The core loop is: put source documents in a Google Drive vault, ask Claude to sync them into SQLite, then render a self-contained dashboard.
 
@@ -83,8 +83,8 @@ Telegram delivery is useful but optional; the dashboard is always written locall
 
 ```text
                           +----------------------+
-                          | Claude Code skills   |
-                          | .claude/skills/*     |
+                          | findash plugin       |
+                          | skills/* (/findash:) |
                           +----------+-----------+
                                      |
                                      v
@@ -124,30 +124,47 @@ The dashboard is self-contained: CSS, fonts, Chart.js, chart data, and markup ar
 
 ## The Skills
 
-FinDash is designed to be operated through Claude Code skills:
+FinDash is operated through the plugin's namespaced skills. The two new entry points wrap the rest, so most days you only run one:
 
 | Skill | Required? | What it does |
 |---|---:|---|
-| `/sync-finance-data` | Yes | Reads the Drive vault, applies Claude's judgment to source documents, and writes audited rows into SQLite. |
-| `/render-finance-dashboard` | Yes | Renders `output/dashboard.html` from SQLite and optionally sends it to Telegram. |
-| `/fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into Drive `dump/`. |
-| `/findash-doctor` | Recommended | Audits local setup and auto-fixes safe missing pieces. |
+| `/findash:daily-run` | Entry point | Runs the whole morning flow end-to-end: fetch → sync → render → deliver to Telegram. This is what the cron wrapper invokes. |
+| `/findash:setup` | Entry point | Guided first-time onboarding: auto-fixes the safe pieces and walks you through the rest. |
+| `/findash:sync-finance-data` | Yes | Reads the Drive vault, applies Claude's judgment to source documents, and writes audited rows into SQLite. |
+| `/findash:render-finance-dashboard` | Yes | Renders `output/dashboard.html` from SQLite and optionally sends it to Telegram. |
+| `/findash:fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into Drive `dump/`. |
+| `/findash:findash-doctor` | Recommended | Audits local setup and auto-fixes safe missing pieces. |
 
-Claude skills live in [`.claude/skills/`](.claude/skills). Claude Code discovers project skills from this directory when you run `claude` from the repo root.
+Skills live in [`skills/`](skills) and the plugin manifest in [`.claude-plugin/`](.claude-plugin). Claude Code loads them when you run `claude --plugin-dir .` from the repo root.
 
 ## Privacy Model
 
 This repo is designed so the public code can be shared while private financial state stays local or in your Drive vault.
 
-Secrets live in small local files:
+Secrets live in a single local INI file, `.secrets/findash` (chmod 600), with one section per integration. Omit any section you don't use:
 
-```text
-.secrets/drive       # root_folder_id=<Drive folder ID>
-.secrets/telegram    # bot_token=... / chat_id=...
-.secrets/hapoalim    # user_code=... / password=...
-.secrets/cal         # username=... / password=...
-.secrets/pdf-passwords
+```ini
+# .secrets/findash — chmod 600. Omit any section you don't use.
+[drive]
+root_folder_id=<from your vault folder's Drive URL: drive.google.com/drive/folders/<ID>>
+
+[hapoalim]
+user_code=<your hapoalim user code>
+password=<your hapoalim password>
+
+[cal]
+username=<your cal username>
+password=<your cal password>
+
+[telegram]
+bot_token=<from @BotFather>
+chat_id=<your numeric id, from @userinfobot>
+
+[pdf-passwords]
+<payslip-filename-pattern>=<password>
 ```
+
+`rclone.conf` stays a separate file — it is rclone's own OAuth config, passed via `--config ./rclone.conf`.
 
 The committed docs use placeholders for account suffixes, card suffixes, Drive IDs, balances, transaction IDs, and example amounts. Concrete mappings belong in the private SQLite DB or source documents, not in git.
 
@@ -156,10 +173,12 @@ When you run the Claude skills, Claude reads the documents needed for the task. 
 ## Repo Map
 
 ```text
+.claude-plugin/       plugin + marketplace manifests
+skills/               plugin skills: daily-run, setup, fetch, sync, render, doctor
 docs/                 project docs: schema, Drive layout, source document types
 scripts/              mechanical parsers, scrapers, renderers, daily runner
 templates/            dashboard shell, CSS, and chart code
-.claude/skills/       agent workflows for fetch, sync, render, and doctor
+.secrets/findash      single local INI of credentials, gitignored
 data/                 local SQLite database, gitignored
 inbox/                transient downloads, gitignored
 output/               rendered dashboard, gitignored
@@ -169,49 +188,47 @@ output/               rendered dashboard, gitignored
 
 For the full setup, read [docs/setup.md](docs/setup.md). The short version:
 
-1. Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup), then run `claude` from this repo root.
-2. Install required local tools:
+1. Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) and the local tools:
 
 ```bash
+qpdf --version          # payslip PDFs
+rclone version          # Drive sync
+node --version          # bank fetch, needs >=22.13.0
 python3 --version
-rclone version
 sqlite3 --version
 ```
 
-3. Create a Google Drive finance vault and configure `rclone` remote `gdrive`. See [Drive + rclone setup](docs/setup.md#3-connect-google-drive-with-rclone) and [Drive layout](docs/drive-layout.md).
-4. Create local secrets:
-
-```text
-.secrets/drive       # required: root_folder_id=<Drive folder ID>
-.secrets/telegram    # optional: bot_token=... / chat_id=...
-.secrets/hapoalim    # optional: user_code=... / password=...
-.secrets/cal         # optional: username=... / password=...
-.secrets/pdf-passwords
-```
-
-5. Bundle dashboard assets once:
+2. Clone this repo and load the plugin from its root:
 
 ```bash
-python3 scripts/bundle-assets.py
+git clone https://github.com/ya5huk/findash.git
+cd findash
+claude --plugin-dir .
 ```
 
-6. Run the setup doctor:
+3. Run the guided onboarding — it auto-fixes the safe pieces and walks you through the rest:
 
 ```text
-/findash-doctor
+/findash:setup
 ```
 
-7. Run the core workflow:
+4. Create `.secrets/findash` (chmod 600) from the single block in [Privacy Model](#privacy-model). Omit any section you don't use. `rclone.conf` stays separate; see [Drive + rclone setup](docs/setup.md#3-connect-google-drive-with-rclone) and [Drive layout](docs/drive-layout.md).
+
+5. Run the whole flow with one command:
 
 ```text
-/sync-finance-data
-/render-finance-dashboard
+/findash:daily-run
 ```
 
-Add `/fetch-bank-data` before sync only if you configured the optional bank fetch setup.
+This fetches, syncs, renders, and delivers to Telegram. To run pieces by hand, use `/findash:fetch-bank-data`, `/findash:sync-finance-data`, and `/findash:render-finance-dashboard`.
 
-If you want unattended daily runs to fetch from Hapoalim or Cal, seed the
-browser profiles once before scheduling cron:
+For unattended (cron/launchd) daily runs, schedule the wrapper — it loads the plugin and runs `/findash:daily-run`:
+
+```bash
+CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
+```
+
+If you want unattended runs to fetch from Hapoalim or Cal, seed the browser profiles once before scheduling:
 
 ```bash
 node scripts/fetch_bank.js --company=hapoalim --setup
@@ -224,17 +241,20 @@ sends an OTP during a later unattended run, rerun the matching `--setup`
 command; the run will continue with stale fetched data until the profile is
 refreshed.
 
-For unattended daily runs, use:
+### Install as a plugin (for others)
 
-```bash
-CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
+You don't have to clone to use FinDash. From any Claude Code session:
+
+```text
+/plugin marketplace add ya5huk/findash
+/plugin install findash@findash
 ```
 
 ## Optional Integrations
 
 - Telegram: sends `output/dashboard.html` as a bot attachment. Without Telegram, rendering still writes the local dashboard. See [Telegram setup](docs/setup.md#telegram-optional).
 - Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
-- Password-protected payslips: requires `qpdf` and `.secrets/pdf-passwords`. Without it, skip payslip PDFs or add the password file later.
+- Password-protected payslips: requires `qpdf` and a `[pdf-passwords]` section in `.secrets/findash`. Without it, skip payslip PDFs or add the passwords later.
 
 ## Docs
 

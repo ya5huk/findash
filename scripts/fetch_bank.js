@@ -3,7 +3,7 @@
 // Invocation:
 //   node scripts/fetch_bank.js --company=<hapoalim|visaCal> [--start-date=YYYY-MM-DD] [--setup] [--remote-debug-port=<N>]
 //
-// Credentials are read from .secrets/<company> (loaded automatically) or env:
+// Credentials are read from .secrets/findash ([hapoalim]/[cal] sections), or env:
 //   hapoalim → HAPOALIM_USER_CODE, HAPOALIM_PASSWORD
 //   visaCal  → CAL_USERNAME, CAL_PASSWORD
 // The scraper reads creds itself, so they never need to appear on the command
@@ -33,30 +33,26 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { CompanyTypes, createScraper } from 'israeli-bank-scrapers';
 import puppeteer from 'puppeteer';
+import { resolveCompanyCreds } from './lib/secrets.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// Map: --company flag → (.secrets/<filename>, { fileKey: envVarName })
+// Map: --company flag → consolidated [section] + key→envVar.
 const SECRETS_MAP = {
-  hapoalim: { file: 'hapoalim', keys: { user_code: 'HAPOALIM_USER_CODE', password: 'HAPOALIM_PASSWORD' } },
-  visaCal:  { file: 'cal',      keys: { username:  'CAL_USERNAME',       password: 'CAL_PASSWORD' } },
+  hapoalim: { section: 'hapoalim', keys: { user_code: 'HAPOALIM_USER_CODE', password: 'HAPOALIM_PASSWORD' } },
+  visaCal:  { section: 'cal',      keys: { username:  'CAL_USERNAME',       password: 'CAL_PASSWORD' } },
 };
 
+// Credentials come from the consolidated `.secrets/findash` [<section>] block.
+// An already-set env var always wins (lets a caller override without files).
 function loadSecretsIntoEnv(company) {
   const spec = SECRETS_MAP[company];
   if (!spec) return;
-  const path = join(PROJECT_ROOT, '.secrets', spec.file);
-  if (!existsSync(path)) return;
-  const text = readFileSync(path, 'utf8');
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    const value = line.slice(eq + 1).trim();
-    const envName = spec.keys[key];
-    if (envName && !process.env[envName]) process.env[envName] = value;
+  const path = join(PROJECT_ROOT, '.secrets', 'findash');
+  const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const creds = resolveCompanyCreds(text, spec);
+  for (const [envName, value] of Object.entries(creds)) {
+    if (!process.env[envName]) process.env[envName] = value;
   }
 }
 
@@ -266,7 +262,7 @@ function buildCredentials(company) {
     if (!userCode || !password) {
       console.error(
         'Missing Hapoalim credentials.\n' +
-        '  Provide via .secrets/hapoalim (lines: user_code=… / password=…)\n' +
+        '  Provide via .secrets/findash ([hapoalim] section: user_code=… / password=…)\n' +
         '  or via env: HAPOALIM_USER_CODE, HAPOALIM_PASSWORD',
       );
       process.exit(2);
@@ -279,7 +275,7 @@ function buildCredentials(company) {
     if (!username || !password) {
       console.error(
         'Missing Cal credentials.\n' +
-        '  Provide via .secrets/cal (lines: username=… / password=…)\n' +
+        '  Provide via .secrets/findash ([cal] section: username=… / password=…)\n' +
         '  or via env: CAL_USERNAME, CAL_PASSWORD',
       );
       process.exit(2);

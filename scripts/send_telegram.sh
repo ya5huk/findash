@@ -27,8 +27,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ ! -f .secrets/telegram ]; then
-  echo "Telegram delivery skipped: .secrets/telegram not configured — see CLAUDE.md"
+if ! { [ -f .secrets/findash ] && grep -q '^[[:space:]]*\[telegram\]' .secrets/findash; }; then
+  echo "Telegram delivery skipped: not configured — add a [telegram] section to .secrets/findash (see CLAUDE.md)"
   exit 0
 fi
 if [ ! -f output/dashboard.html ]; then
@@ -39,15 +39,12 @@ fi
 NOTE="$NOTE" DRY="$DRY" python3 - <<'PY'
 import html, json, os, re, sys, urllib.request, urllib.error, uuid
 
-sec = {}
-for ln in open('.secrets/telegram', encoding='utf-8'):
-    ln = ln.strip()
-    if ln and not ln.startswith('#') and '=' in ln:
-        k, v = ln.split('=', 1)
-        sec[k.strip()] = v.strip()
+sys.path.insert(0, 'scripts/lib')
+import findash_secrets
+sec = findash_secrets.read_section('telegram')  # .secrets/findash [telegram]
 bot, chat = sec.get('bot_token'), sec.get('chat_id')
 if not bot or not chat:
-    print("Telegram delivery skipped: bot_token/chat_id missing in .secrets/telegram")
+    print("Telegram delivery skipped: bot_token/chat_id missing in .secrets/findash [telegram]")
     sys.exit(0)
 
 try:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the finance dashboard from data/finance.db.
 
-Canonical implementation invoked by .claude/skills/render-finance-dashboard/SKILL.md.
+Canonical implementation invoked by skills/render-finance-dashboard/SKILL.md.
 Fetches live prices/FX from Yahoo Finance, computes ILS-normalized market values,
 fills templates/dashboard.html.tpl, and writes output/dashboard.html as a single
 self-contained file with all CSS, fonts, and Chart.js inlined.

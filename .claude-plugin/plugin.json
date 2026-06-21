@@ -1,0 +1,17 @@
+{
+  "name": "findash",
+  "version": "1.0.0",
+  "description": "Personal finance system as Claude skills: fetch bank data, sync the Drive vault into SQLite, and render a self-contained HTML dashboard. Skills: daily-run (the full morning flow), fetch-bank-data, sync-finance-data, render-finance-dashboard, findash-doctor, and setup.",
+  "author": {
+    "name": "ya5huk"
+  },
+  "homepage": "https://github.com/ya5huk/findash",
+  "repository": "https://github.com/ya5huk/findash",
+  "keywords": [
+    "finance",
+    "dashboard",
+    "sqlite",
+    "google-drive",
+    "personal-finance"
+  ]
+}

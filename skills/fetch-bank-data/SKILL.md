@@ -5,28 +5,28 @@ description: Use when the user says "fetch bank data", "pull from bank", "fetch 
 
 # fetch-bank-data
 
-You pull fresh data from the user's customer-facing bank + credit-card sites and drop reasoned files into Drive `dump/`. **Sync owns ingestion** — your job ends when the files are in `dump/`. You do not touch SQLite, do not call the dashboard, do not send Telegram. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `.secrets/<company>` file + one more mapping line below.
+You pull fresh data from the user's customer-facing bank + credit-card sites and drop reasoned files into Drive `dump/`. **Sync owns ingestion** — your job ends when the files are in `dump/`. You do not touch SQLite, do not call the dashboard, do not send Telegram. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `[section]` in `.secrets/findash` + one more mapping line below.
 
 ## Where things live
 
 - Scraper wrapper: `scripts/fetch_bank.js` (parameterized by `--company`)
 - Node deps: `scripts/package.json` (`israeli-bank-scrapers` + `puppeteer`; run `cd scripts && npm install` once)
-- Per-source credentials: `.secrets/hapoalim` and `.secrets/cal` (key=value lines, chmod 600)
+- Credentials: the `[hapoalim]` / `[cal]` sections of `.secrets/findash` (chmod 600)
 - Per-company Chromium profile (persists trusted-device cookies + soft anti-bot state): `~/.cache/findash/chromium-profile/<companyId>/`
 - Local staging dir for paired files before upload: `inbox/staging/`
 - rclone config: `./rclone.conf` (always pass `--config ./rclone.conf`)
-- Drive root folder ID: `.secrets/drive` (key `root_folder_id=…`, chmod 600). Folder layout: [`docs/drive-layout.md`](../../../docs/drive-layout.md) (root is the `dump/` parent).
+- Drive root folder ID: the `[drive]` section of `.secrets/findash` (`root_folder_id=…`, chmod 600). Folder layout: [`docs/drive-layout.md`](../../docs/drive-layout.md) (root is the `dump/` parent).
 - SQLite (read-only here, for date-range + own-account vocabulary): `data/finance.db`
-- Doc-type shapes sync will see: [`docs/doc-types.md`](../../../docs/doc-types.md) (`bank_api_dump`, `bank_api_notes`, `cal_api_dump`, `cal_api_notes`)
+- Doc-type shapes sync will see: [`docs/doc-types.md`](../../docs/doc-types.md) (`bank_api_dump`, `bank_api_notes`, `cal_api_dump`, `cal_api_notes`)
 
 ## Sources
 
-| company    | scraper `companyId` | secrets file       | env vars consumed by the script         |
-|------------|---------------------|--------------------|------------------------------------------|
-| `hapoalim` | `hapoalim`          | `.secrets/hapoalim` | `HAPOALIM_USER_CODE`, `HAPOALIM_PASSWORD` |
-| `cal`      | `visaCal`           | `.secrets/cal`      | `CAL_USERNAME`, `CAL_PASSWORD`            |
+| company    | scraper `companyId` | secrets section | env vars consumed by the script         |
+|------------|---------------------|-----------------|------------------------------------------|
+| `hapoalim` | `hapoalim`          | `[hapoalim]`    | `HAPOALIM_USER_CODE`, `HAPOALIM_PASSWORD` |
+| `cal`      | `visaCal`           | `[cal]`         | `CAL_USERNAME`, `CAL_PASSWORD`            |
 
-Both files are `key=value` lines, one per line. Hapoalim uses `user_code=` and `password=`. Cal uses `username=` and `password=` (not `user_code` — matches Cal's login UI and the library's credential shape).
+Both sections are `key=value` lines under their `[…]` header in `.secrets/findash`. Hapoalim uses `user_code=` and `password=`. Cal uses `username=` and `password=` (not `user_code` — matches Cal's login UI and the library's credential shape).
 
 Both also accept `START_DATE` from env (ISO `YYYY-MM-DD`) — the script falls back to 60 days back if unset.
 
@@ -36,7 +36,7 @@ Run **all configured sources in parallel** unless the user explicitly named one 
 
 ### 1. Skip if no secrets
 
-If `.secrets/<source>` is absent, silently skip that source and name it in the final summary. A one-bank user still gets a working skill.
+If a source has no credentials (no `[<source>]` section in `.secrets/findash`), silently skip that source and name it in the final summary. A one-bank user still gets a working skill.
 
 ### 2. Pick a start date
 
@@ -52,7 +52,7 @@ Subtract a few days (3–5) for overlap safety — sync dedups, so re-sending re
 
 ### 3. Run the scraper
 
-The scraper reads credentials from `.secrets/<source>` **itself** — never put them on the command line. That keeps the unattended `claude -p` run allowlist-safe (the command stays a clean `node scripts/fetch_bank.js …` prefix) and your password out of the transcript. Pass the step-2 window as a flag and read the JSON straight from stdout — **no `>` redirection** (the unattended run can't write to arbitrary paths):
+The scraper reads credentials from `.secrets/findash` **itself** — never put them on the command line. That keeps the unattended `claude -p` run allowlist-safe (the command stays a clean `node scripts/fetch_bank.js …` prefix) and your password out of the transcript. Pass the step-2 window as a flag and read the JSON straight from stdout — **no `>` redirection** (the unattended run can't write to arbitrary paths):
 
 ```bash
 node scripts/fetch_bank.js --company=hapoalim --start-date=2026-04-20
@@ -161,7 +161,7 @@ rclone --config ./rclone.conf copy --drive-root-folder-id=<ROOT_ID> \
   inbox/staging/ gdrive:dump/
 ```
 
-Root ID is `root_folder_id=…` in `.secrets/drive`. After upload succeeds, delete the local `inbox/staging/<file>` (the file lives in Drive now; sync owns the next move).
+Root ID is `root_folder_id=…` from `.secrets/findash` `[drive]`. After upload succeeds, delete the local `inbox/staging/<file>` (the file lives in Drive now; sync owns the next move).
 
 ### 8. Report
 
@@ -172,7 +172,7 @@ Hapoalim: 23 txns on <acct-a>, 7 txns on <acct-b>, 0 flags. 2 files uploaded to 
 Cal: 17 txns on <acct-suffix>, 2 flags (installments-amazon, fx-usd-zara, pending-3). 1 file uploaded.
 ```
 
-If a source was skipped: `Hapoalim: skipped (no .secrets/hapoalim).`
+If a source was skipped: `Hapoalim: skipped (no [hapoalim] credentials).`
 If a source failed: `Cal: failed (errorType=GENERIC, errorMessage=…). Re-run: node scripts/fetch_bank.js --company=visaCal --setup`.
 
 **Do not** send to Telegram. Do not invoke sync. Do not touch the DB. End here.
@@ -198,4 +198,4 @@ If a source failed: `Cal: failed (errorType=GENERIC, errorMessage=…). Re-run: 
 - **Notes are hints, not ground truth.** Sync should verify against the underlying JSON and against cross-source documents (Hafenix periodic statements, etc.) before trusting any bullet.
 - **Idempotency belongs to sync, not here.** It's fine for two runs in the same morning to upload two near-identical files; sync dedups via `documents.drive_id` (which differs per upload) and via `(account_id, date, …)` content keys when it actually ingests the txns.
 - **Atomicity per source.** If Cal fails mid-flow, no Cal files land in `dump/`. Hapoalim's files (if its run succeeded) are unaffected.
-- **Adding a new issuer is mechanical.** New `.secrets/<company>`, new mapping row in the table above, new env-var pair to load. No script change unless the new issuer's credential shape doesn't match `{username, password}` or `{userCode, password}`.
+- **Adding a new issuer is mechanical.** New `[section]` in `.secrets/findash`, new mapping row in the table above, new env-var pair to load. No script change unless the new issuer's credential shape doesn't match `{username, password}` or `{userCode, password}`.

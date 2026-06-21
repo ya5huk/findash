@@ -1,6 +1,8 @@
 # findash
 
-Personal finance system. Drive vault → SQLite → HTML dashboard. Three skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `render-finance-dashboard` reads SQLite into the HTML. Everything else is data, templates, and documentation.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault → SQLite → HTML dashboard. Three skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains all three for the morning flow (it's what the cron wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Everything else is data, templates, and documentation.
+
+Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running Claude Code from the repo root with `claude --plugin-dir .` (the cron wrapper passes the same flag).
 
 ## First principles
 
@@ -30,18 +32,20 @@ These shape every decision in this project. Re-read them when you're about to wr
 ├── .gitignore
 ├── rclone.conf               ← OAuth token, chmod 600, gitignored
 ├── .secrets/
-│   ├── drive                 ← root_folder_id=… for the Drive vault, chmod 600
-│   ├── pdf-passwords         ← <pattern>=<password> lines, chmod 600
-│   ├── telegram              ← bot_token=… / chat_id=… for dashboard delivery
-│   ├── hapoalim              ← user_code=… / password=… for fetch-bank-data
-│   └── cal                   ← username=… / password=… for fetch-bank-data
-├── .claude/skills/
+│   └── findash               ← one chmod-600 INI: [drive] [hapoalim] [cal] [telegram] [pdf-passwords]
+├── .claude-plugin/
+│   ├── plugin.json           ← plugin manifest (name: findash → /findash:<skill>)
+│   └── marketplace.json      ← lets others `/plugin marketplace add ya5huk/findash`
+├── skills/                   ← plugin skills (auto-scanned)
+│   ├── daily-run/SKILL.md          ← full morning flow; what run_daily.sh invokes
+│   ├── fetch-bank-data/SKILL.md
 │   ├── sync-finance-data/SKILL.md
 │   ├── render-finance-dashboard/SKILL.md
-│   └── fetch-bank-data/SKILL.md
+│   ├── findash-doctor/SKILL.md
+│   └── setup/SKILL.md              ← guided first-time onboarding
 ├── docs/
 │   ├── sqlite-schema.md      ← schema conventions + example queries
-│   ├── drive-layout.md       ← Drive folder structure (ID lives in .secrets/drive)
+│   ├── drive-layout.md       ← Drive folder structure (ID lives in .secrets/findash [drive])
 │   ├── doc-types.md          ← what each kind of document contains + judgment calls
 │   ├── design-system.md      ← the booky aesthetic
 │   └── inspiration/          ← reference images
@@ -63,6 +67,8 @@ These shape every decision in this project. Re-read them when you're about to wr
     ├── xlsx_to_rows.py       ← stdlib-only XLSX → JSON parser
     ├── bundle-assets.py      ← one-shot vendor script for templates/vendor/
     ├── fetch_bank.js         ← Puppeteer wrapper around israeli-bank-scrapers (Hapoalim + Cal)
+    ├── run_daily.sh          ← unattended wrapper: loads the plugin, runs /findash:daily-run
+    ├── lib/                  ← shared secret-file parsers (secrets.mjs, findash_secrets.py)
     ├── package.json          ← npm deps for fetch_bank.js (`cd scripts && npm install`)
     └── node_modules/         ← gitignored
 ```
@@ -71,25 +77,28 @@ These shape every decision in this project. Re-read them when you're about to wr
 
 - `qpdf` is required to unlock payslip PDFs. Install: `sudo apt install -y qpdf`.
 - `rclone` is already configured for the project; auth lives in `./rclone.conf` (chmod 600). Always pass `--config ./rclone.conf` to any rclone invocation.
-- The Drive vault root folder ID lives in `.secrets/drive` (chmod 600) as `root_folder_id=<ID>`. Get the ID from your vault folder's Drive URL (`drive.google.com/drive/folders/<ID>`). Skills read it from there and pass it to rclone via `--drive-root-folder-id=<ID>`. Folder *structure* (what lives under it) is documented in `docs/drive-layout.md`.
-- Payslip passwords go in `.secrets/pdf-passwords`, one `<filename-pattern>=<password>` per line. Keep this file local and chmod 600.
+- **All findash secrets live in one chmod-600 file, `.secrets/findash`** — an INI with `[drive] [hapoalim] [cal] [telegram] [pdf-passwords]` sections. `rclone.conf` stays separate (rclone's own OAuth config). The Drive vault root folder ID is `root_folder_id=<ID>` under `[drive]`; get the ID from your vault folder's Drive URL (`drive.google.com/drive/folders/<ID>`). Skills read it and pass it to rclone via `--drive-root-folder-id=<ID>`. Folder *structure* is documented in `docs/drive-layout.md`.
+- Payslip passwords go under `[pdf-passwords]` in `.secrets/findash`, one `<filename-pattern>=<password>` per line.
 - **Offline assets for the dashboard:** run `python3 scripts/bundle-assets.py` once to vendor Chart.js, the date adapter, and base64-embedded EB Garamond + Cormorant Garamond fonts into `templates/vendor/` (gitignored). Re-run only if pinned versions change.
-- **Telegram delivery for the dashboard:** `.secrets/telegram` holds the bot credentials, two lines:
+- **Telegram delivery for the dashboard:** the `[telegram]` section of `.secrets/findash` holds the bot credentials:
   ```
+  [telegram]
   bot_token=<from @BotFather>
   chat_id=<your numeric Telegram user id, from @userinfobot>
   ```
-  Create the bot once via `@BotFather` → `/newbot`, then tap **Start** on the bot so it's allowed to DM you. `render-finance-dashboard` reads this file and sends the dashboard as a single HTML attachment. If the file is absent, the skill still writes the local file and just skips the send.
+  Create the bot once via `@BotFather` → `/newbot`, then tap **Start** on the bot so it's allowed to DM you. `render-finance-dashboard` reads it and sends the dashboard as a single HTML attachment. If no `[telegram]` section is present, the skill still writes the local file and just skips the send.
 - **Hapoalim + Cal auto-fetch (`fetch-bank-data` skill):**
   1. Node ≥ 22.13.0 required (`israeli-bank-scrapers` engine constraint). Check with `node --version`; if older, `nvm install 22 && nvm use 22`.
   2. `cd scripts && npm install` — installs `israeli-bank-scrapers` + Puppeteer + a bundled Chromium. One `package.json` covers both companies.
-  3. Create `.secrets/hapoalim` (chmod 600):
+  3. Add Hapoalim credentials to `.secrets/findash` (chmod 600) under `[hapoalim]`:
      ```
+     [hapoalim]
      user_code=<your hapoalim user code>
      password=<your hapoalim password>
      ```
-  4. Create `.secrets/cal` (chmod 600). Note the key is `username` (matches Cal's login UI and the library's credential shape), not `user_code`:
+  4. Add Cal credentials to `.secrets/findash` under `[cal]`. The key is `username` (matches Cal's login UI and the library's credential shape), not `user_code`:
      ```
+     [cal]
      username=<your cal username>
      password=<your cal password>
      ```
@@ -103,7 +112,7 @@ These shape every decision in this project. Re-read them when you're about to wr
      node scripts/fetch_bank.js --company=visaCal --setup
      ```
      Log in if prompted, solve CAPTCHA/2FA if it appears, trust the device if offered, then press Enter in the terminal. Profile is saved to `~/.cache/findash/chromium-profile/visaCal/`.
-  7. Either source whose `.secrets/<company>` file is absent is silently skipped — a one-bank user can still run the skill.
+  7. Either source whose credentials are absent (no `[<company>]` section in `.secrets/findash`) is silently skipped — a one-bank user can still run the skill.
 
 ## Files to never commit
 
@@ -111,9 +120,13 @@ These shape every decision in this project. Re-read them when you're about to wr
 
 ## Trigger phrases
 
+Skills are invoked as `/findash:<skill>`; the phrases below also trigger them by description.
+
+- **"run the daily flow"** / **"morning flow"** / **"run everything"** / **"fetch sync render"** / **"do my finances"** → `daily-run` skill (the whole flow)
 - **"fetch bank data"** / **"pull from bank"** / **"fetch hapoalim"** / **"fetch cal"** / **"fetch credit card"** / **"pull from cal"** → `fetch-bank-data` skill
 - **"sync finance"** / **"sync my finance"** / **"ingest new docs"** → `sync-finance-data` skill
 - **"render dashboard"** / **"show my finances"** / **"build the dashboard"** → `render-finance-dashboard` skill
 - **"doctor"** / **"finance doctor"** / **"check finance setup"** / **"what's missing"** → `findash-doctor` skill
+- **"set up findash"** / **"onboard"** / **"first-time setup"** / **"configure findash"** → `setup` skill
 
-The typical morning flow is `fetch → sync → render`: fetch lands new transactions in Drive `dump/`; sync ingests everything in `dump/` (plus anything else newly in the vault) into SQLite; render reads SQLite into the HTML dashboard and ships it to Telegram.
+The typical morning flow is `fetch → sync → render` — now wrapped by `daily-run` (one command, or `scripts/run_daily.sh` unattended): fetch lands new transactions in Drive `dump/`; sync ingests everything in `dump/` (plus anything else newly in the vault) into SQLite; render reads SQLite into the HTML dashboard and ships it to Telegram.

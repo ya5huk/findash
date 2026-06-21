@@ -10,7 +10,7 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 ## Where things live
 
 - Run from the project root (the dir holding `CLAUDE.md`, `scripts/`, `templates/`, `docs/`). Paths below are relative.
-- Drive root ID: `root_folder_id=…` in `.secrets/drive` (chmod 600, gitignored).
+- Drive root ID: `root_folder_id=…` in `.secrets/findash` under `[drive]` (chmod 600, gitignored).
 - Seed script: `scripts/init-db.sql`. Vendor script: `scripts/bundle-assets.py`. npm manifest: `scripts/package.json`.
 
 ## Checks
@@ -20,21 +20,21 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 | 1 | Binaries | `qpdf`, `rclone`, `node ≥22.13.0`, `python3`, `sqlite3` on PATH | No |
 | 2 | Dirs | `data/`, `inbox/`, `output/`, `.secrets/` exist | `mkdir -p` |
 | 3 | rclone.conf | `./rclone.conf` exists + mode 600 | Perms; OR move `~/.config/rclone/rclone.conf` → `./rclone.conf` if local is absent |
-| 4 | Drive root ID | `.secrets/drive` exists, mode 600, has non-placeholder `root_folder_id=` | Perms only |
-| 5 | Secrets | `.secrets/{pdf-passwords,telegram,hapoalim,cal}` + mode 600 | Perms only |
+| 4 | Drive root ID | `.secrets/findash` `[drive]` has a non-placeholder `root_folder_id=` | Perms only |
+| 5 | Secrets | `.secrets/findash` exists + mode 600; note which `[sections]` are filled | Perms only |
 | 6 | npm deps | `scripts/node_modules/` populated | `cd scripts && npm install` |
 | 7 | Vendor | 3 files under `templates/vendor/` | `python3 scripts/bundle-assets.py` |
 | 8 | DB | `data/finance.db` + has tables | `sqlite3 data/finance.db < scripts/init-db.sql` |
 | 9 | Chromium profiles | `~/.cache/findash/chromium-profile/{hapoalim,visaCal}/` (only when matching secrets exist) | No |
 | 10 | Drive live | `rclone lsf` against vault root succeeds in 5 s | No |
 
-Node: parse `node --version`; major ≥ 23, or major = 22 with patch ≥ 22.13.0. Perms: anything with non-zero group/others digit is wrong → `chmod 600`. For Drive live: read `root_folder_id=…` from `.secrets/drive`; if the file is missing or the value is empty/placeholder/<20 chars, skip the live call and let check #4 own it.
+Node: parse `node --version`; major ≥ 23, or major = 22 with patch ≥ 22.13.0. Perms: anything with non-zero group/others digit is wrong → `chmod 600`. For Drive live: read `root_folder_id=…` from `.secrets/findash` `[drive]`; if it's missing or the value is empty/placeholder/<20 chars, skip the live call and let check #4 own it.
 
 ## Auto-fix order
 
 1. `mkdir -p data inbox output .secrets`
 2. If `./rclone.conf` is missing but `~/.config/rclone/rclone.conf` exists (rclone's default XDG path — what plain `rclone config` writes to), move it: `mv ~/.config/rclone/rclone.conf ./rclone.conf`. Then re-check perms in step 3. (Not a symlink — the project owns this file.)
-3. `chmod 600` any of `{rclone.conf, .secrets/drive, .secrets/pdf-passwords, .secrets/telegram, .secrets/hapoalim, .secrets/cal}` that exists and is looser than 600
+3. `chmod 600` `rclone.conf` and `.secrets/findash` if either exists and is looser than 600
 4. Init DB if missing/empty (needs `sqlite3`)
 5. `(cd scripts && npm install)` if `node_modules/` empty (needs valid `node`; stream stderr)
 6. `python3 scripts/bundle-assets.py` if any vendor file missing (needs `python3`). On macOS, if it fails with `SSL: CERTIFICATE_VERIFY_FAILED`, fix and retry once: `pip3 install --upgrade certifi` then run the Python.org cert installer for the active version (`/Applications/Python\ <MAJOR.MINOR>/Install\ Certificates.command`). If the retry succeeds, list the cert fix and the asset bundle as two separate ✅ Fixed bullets. If it still fails, that's a 🚫 Blocker.
@@ -46,8 +46,8 @@ If the Drive live check's preconditions don't hold (rclone or rclone.conf missin
 ## Blocker vs Optional
 
 - **Blocker** = fetch / sync / render literally can't run. (`rclone`, `rclone.conf`, Drive root ID, `python3`, vendor assets, `qpdf` when unsure.)
-- **Optional** = one feature degrades. (`.secrets/telegram`, `.secrets/pdf-passwords`, `.secrets/hapoalim` and `.secrets/cal` individually, chromium profile when its source's secrets are absent.)
-- **Promotion:** chromium profile for a source becomes a blocker the moment its `.secrets/<source>` file lands (creds without trusted cookie → SMS challenge).
+- **Optional** = one feature degrades. (the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent.)
+- **Promotion:** chromium profile for a source becomes a blocker the moment that source's credentials land (a `[<source>]` section in `.secrets/findash`) — creds without a trusted cookie → SMS challenge.
 
 ## Report format
 
@@ -83,19 +83,19 @@ Example on a partially-set-up macOS box:
 🩺 findash — 2026-05-27
 
 ✅ Fixed
-  inbox/, output/ created • .secrets/telegram chmod 600 (was 644)
+  inbox/, output/ created • .secrets/findash chmod 600 (was 644)
 
 🚫 Blockers
   • rclone — `brew install rclone`
   • Drive vault — connect failed (5s); `rclone --config ./rclone.conf config reconnect gdrive:`
 
 ⚠️ Optional
-  • .secrets/cal — only for fetching credit-card data
-  • chromium-profile/visaCal — not blocking yet (no .secrets/cal)
+  • .secrets/findash [cal] — only for fetching credit-card data
+  • chromium-profile/visaCal — not blocking yet (no [cal] creds)
 
 ✓ OK
   qpdf, python3 3.13, node 22.14.0, sqlite3, rclone.conf, Drive root ID,
-  .secrets/hapoalim, .secrets/pdf-passwords, finance.db (12 MB), node_modules/, vendor/
+  .secrets/findash ([hapoalim] [pdf-passwords]), finance.db (12 MB), node_modules/, vendor/
 ```
 
 ## Judgment
@@ -105,3 +105,4 @@ Example on a partially-set-up macOS box:
 - **Idempotent.** Second run on a healthy machine = one line. Only list under ✅ Fixed what you actually changed this run.
 - **Trust reality over CLAUDE.md.** If setup notes say "npm install" but `scripts/package.json` is missing, flag the missing manifest.
 - **No new categories silently.** Surprise findings go under a `🔍 Note` line, not into the matrix.
+- **Legacy per-file secrets are no longer read.** If any `.secrets/{drive,hapoalim,cal,telegram,pdf-passwords}` files exist, add a `🔍 Note`: their values must be moved into the matching `[section]` of `.secrets/findash` (format in `/findash:setup` and `docs/setup.md`) or that integration silently won't work, then the old files deleted. Don't move the user's secrets yourself.

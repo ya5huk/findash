@@ -1,0 +1,14 @@
+{
+  "name": "findash",
+  "owner": {
+    "name": "ya5huk"
+  },
+  "description": "findash — a personal finance plugin: fetch bank data, sync to SQLite, render an HTML dashboard.",
+  "plugins": [
+    {
+      "name": "findash",
+      "source": "./",
+      "description": "Personal finance: fetch bank data → sync the Drive vault into SQLite → render a self-contained HTML dashboard, driven by Claude skills."
+    }
+  ]
+}

@@ -50,7 +50,7 @@ If a `dump/` file doesn't match any row above, the sync proposes a new doc_type,
 
 ## payslips/ — Israeli תלוש משכורת
 
-- **Format:** PDF, password-protected. Passwords are stored locally in `.secrets/pdf-passwords`.
+- **Format:** PDF, password-protected. Passwords are stored locally under `[pdf-passwords]` in `.secrets/findash`.
 - **Unlock:** `qpdf --password=$PASS --decrypt <file> <tmp>` then read the temp file. Delete temp when done.
 - **Typical content:**
   - Employer name + ID
@@ -146,7 +146,7 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
   - For each `הפ/דיב` row in פירוט תנועות, parse `(pay_date, ticker, net amount as the statement shows it — already post-withholding)`.
   - Delete any matching synthetic transaction on the Hafenix brokerage account: `counterparty=ticker, ABS(julianday(date) - julianday(row_date)) <= 5, source doc has doc_type='yahoo_dividend_estimate'`.
   - Insert the real row referencing the statement's `documents.id` — now `source` is a real Hafenix doc, the dashboard tags it "confirmed".
-  - Then run the **snapshot-supersession cleanup** described in `.claude/skills/sync-finance-data/SKILL.md` step 5b: drop remaining synthetic dividend transactions on the Hafenix brokerage account dated `<= cutoff_date`, since the new snapshot's cash component already includes them.
+  - Then run the **snapshot-supersession cleanup** described in `skills/sync-finance-data/SKILL.md` step 5b: drop remaining synthetic dividend transactions on the Hafenix brokerage account dated `<= cutoff_date`, since the new snapshot's cash component already includes them.
 - `מס/דיב` (withholding tax) rows are informational only — the synthetic + statement amounts are already net of withholding, so don't insert these as separate transactions.
 - **The total portfolio value** (סה"כ row) is informational — it equals positions + cash and the dashboard already computes brokerage equity from `trades` × historical prices. **Do not** insert it as a `component=NULL` balance row; per `[[project_hafenix_cash_tracking]]` Hafenix uses per-currency components only.
 
@@ -236,7 +236,7 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
 
 ### API-fetched pairs (`bank_api_dump` / `bank_api_notes` / `cal_api_dump` / `cal_api_notes`)
 
-Produced by the `fetch-bank-data` skill (see `.claude/skills/fetch-bank-data/SKILL.md`). Each fetch run drops a pair of files into Drive `dump/` per non-empty account: a `.json` raw scrape and a `.notes.md` sidecar with prose observations. Both files describe the same account on the same fetch date — read them together.
+Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`). Each fetch run drops a pair of files into Drive `dump/` per non-empty account: a `.json` raw scrape and a `.notes.md` sidecar with prose observations. Both files describe the same account on the same fetch date — read them together.
 
 **Filename anatomy:**
 

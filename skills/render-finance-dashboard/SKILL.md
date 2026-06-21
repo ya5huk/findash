@@ -17,11 +17,11 @@ You render the booky finance dashboard from the current state of `data/finance.d
   - `templates/vendor/chart.umd.min.js`
   - `templates/vendor/chartjs-adapter-date-fns.bundle.min.js`
   - `templates/vendor/fonts-inline.css` (EB Garamond + Cormorant Garamond, base64 woff2)
-- Telegram credentials: `.secrets/telegram` (key=value, two lines: `bot_token=…` and `chat_id=…`)
+- Telegram credentials: the `[telegram]` section of `.secrets/findash` (`bot_token=…` and `chat_id=…`)
 - Local DB: `data/finance.db`
 - Output: a single self-contained file at `output/dashboard.html`
-- SQL schema and example queries: [`docs/sqlite-schema.md`](../../../docs/sqlite-schema.md)
-- Visual rules: [`docs/design-system.md`](../../../docs/design-system.md)
+- SQL schema and example queries: [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md)
+- Visual rules: [`docs/design-system.md`](../../docs/design-system.md)
 
 ## Flow
 
@@ -61,7 +61,7 @@ You render the booky finance dashboard from the current state of `data/finance.d
    - If `data/last_sync_summary.md` exists, prepends `Sync — <AS_OF_DATE>` and sends it as
      `sendMessage` (plain text; split into ≤4000-char parts on `\n` boundaries), then deletes
      it on success. Absent → prints `Sync summary: Skipped (no summary)`.
-   - Missing `.secrets/telegram` → prints `Telegram delivery skipped: …` and exits 0 (local
+   - Telegram not configured (no `[telegram]` in `.secrets/findash`) → prints `Telegram delivery skipped: …` and exits 0 (local
      file still useful). Never deletes the local dashboard on a Telegram failure.
 
    Pass `--note "<line>"` to append a caption line — the morning flow uses this to surface a
