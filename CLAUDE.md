@@ -47,7 +47,7 @@ These shape every decision in this project. Re-read them when you're about to wr
 ├── docs/
 │   ├── sqlite-schema.md      ← schema conventions + example queries
 │   ├── drive-layout.md       ← Drive folder structure (ID lives in .secrets/findash [drive])
-│   ├── doc-types/            ← per-folder doc-type catalogue + judgment calls (README = index)
+│   ├── doc-types/            ← per-folder archetype catalogue + judgment calls (README = index)
 │   ├── live-sources.md       ← live-API sources (IBKR) that write SQLite directly (no document)
 │   ├── design-system.md      ← the booky aesthetic
 │   └── inspiration/          ← reference images

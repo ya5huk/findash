@@ -1,6 +1,6 @@
 # Classification — expense vs transfer & judgment calls
 
-> Part of the [doc-types catalogue](./README.md) — principles, folder routing, and the full index live there.
+> Part of the [doc-types catalogue](./README.md) — principles, archetypes, and the full index live there.
 
 ## Expense vs transfer classification
 

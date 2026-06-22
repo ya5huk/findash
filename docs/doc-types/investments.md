@@ -1,33 +1,33 @@
 # Investments — brokerage exports & screenshots
 
-> Part of the [doc-types catalogue](./README.md) — principles, folder routing, and the full index live there.
+> Part of the [doc-types catalogue](./README.md) — principles, archetypes, and the full index live there.
 
 ## investments/ — brokerage exports & screenshots
 
 Brokerage exports & screenshots describe trades, positions, and account state. The examples below use one Israeli broker's formats — adapt field names/titles to your broker.
 
-### `*-stock-events-transactions-*.xlsx` — full trade history
+### Full trade-history export
 
 - **Columns:** `Symbol, Date, Quantity (signed), Price, Price Currency, Fees Percentage, Fees Amount, Fees Currency`
 - **Maps to** `trades`: one row per non-zero Quantity row. `side='buy'` if Quantity > 0 else `'sell'`. `shares = abs(Quantity)`.
 - **Securities** need a row in `securities` first — create on first sighting; `asset_class='stock'` unless obviously an ETF.
 
-### `*-investment-deposits-*.xlsx` — cash deposits into brokerage
+### Cash deposits into the brokerage
 
 - **Maps to** `transactions` on the **brokerage account**: `category='deposit'`, positive amount. Store the ILS source + rate in `description` as `from <ILS> ILS @ <rate>`.
 - The same money usually shows up as an outflow on a Hapoalim checking statement (counterparty: `<your brokerage>`). Both rows should exist — they're not duplicates, they're the two sides of a transfer. The `reference` from the bank side helps tie them together.
 - **Date disambiguation — the DD/MM↔MM/DD gotcha (do this every ingest; see Principle 6 in the [README](./README.md)).** The Date column is Israeli DD/MM/YYYY, but Excel may have stored an *ambiguous* cell (day ≤ 12, so the day could pass as a month) under a MM/DD reading — e.g. `07/04` (7 Apr) saved as 4 Jul. Cells with day > 12 are self-resolving. `xlsx_to_rows.py` lists every such cell in its `ambiguous_dates` output as `{cell, value, swapped}`. For each, pick `value` vs `swapped` by these cross-checks: (1) **FX match** — compare the row's `$ price` to `fx_rates` on both candidate dates; the recorded rate runs a small spread *above* mid, so the closer candidate (after allowing ~0.0–0.06) wins, and a tight match is decisive; (2) **cumulative `Total ($)` / row order** — the sheet is strictly chronological top→bottom, so the chosen dates must keep deposits monotonic in time.
 - **Do not seed `fx_rates` from this sheet.** The `$ price` is the transacted rate (carries a spread) and lives only in the transaction `description`. Valuation FX comes from Yahoo; the authoritative in-brokerage conversion rate is captured by the `fx_conversion` screenshot (which *does* write `fx_rates`, `source='document'`), not here. Seeding a spread-laden rate — worse, on a mis-parsed date — silently corrupts USD valuations.
 
-### `*-net-worth-*.xlsx` — brokerage account value snapshot
+### Brokerage value snapshot (simple total)
 
 - **Maps to** `balances` on the brokerage account: `component=NULL`, `as_of = doc_date`, `amount_minor = total value`.
 
-### `*-stock-market-operations-*.xlsx` (`manual_trading_journal`)
+### Manual trading journal
 
-- User-maintained trading journal: one row per closed buy/sell pair with prices, fees, P/L, and free-form "Loss/Win Explanation" prose. The same trades are already captured in `trades` from the brokerage's `trade_history` export, so this file's structured data is redundant. The prose isn't normalizable. **Skip extraction** unless the user explicitly wants the reflections preserved.
+- User-maintained trading journal: one row per closed buy/sell pair with prices, fees, P/L, and free-form "Loss/Win Explanation" prose. The same trades are already captured in `trades` from the brokerage's trade-history export, so this file's structured data is redundant. The prose isn't normalizable. **Skip extraction** unless the user explicitly wants the reflections preserved.
 
-### `*-net-worth-*.xlsx` (`manual_networth_log`)
+### Manual net-worth log
 
 - User-maintained monthly net-worth journal. Each entry is a **section** delimited by a date in column A — never by row count. **Walk header-to-header**, not row-by-row: locate every Excel row whose column A is either a date serial (numeric cell with a date style, e.g. `46026.0`) or a `DD/MM/YYYY` text cell; the section runs from one date row up to (but not including) the next date row. Don't use the parser's flat row list — use the raw `xl/sharedStrings.xml` + `xl/worksheets/sheet1.xml` if needed.
 - Layouts vary between sheets — handle both:
@@ -46,11 +46,11 @@ Brokerage exports & screenshots describe trades, positions, and account state. T
   4. **Sprint open date.** Use the Sprint (savings) account's `opened_on` from the `accounts` table; any candidate date before it is impossible.
 - **Dedup:** use `INSERT OR IGNORE` against `UNIQUE(account_id, as_of, component)`. The log's entries should not overlap with official statement closing balances; if they do (e.g. a manual entry on the same day as a Hapoalim XLSX closing), prefer the statement.
 
-### `*-bank-hapoalim-capital-market-*.jpg` — Hapoalim brokerage screenshot
+### Bank brokerage screenshot (e.g. Hapoalim capital-market)
 
 - Read with Read tool's image support. Transcribe positions and/or total value. Treat as a position snapshot if listing securities, or a `balances` row if just a total.
 
-### Brokerage balance screenshot (`brokerage_screenshot` for brokerage cash)
+### Brokerage balance screenshot
 
 - Screenshot from your brokerage's app showing the account's cash holdings, typically broken out per currency (USD, GBP, ILS). May also include a positions list — those are informational only; positions are tracked via `trades`.
 - **Maps to** `balances` on the brokerage account, one row per non-zero currency:
@@ -64,21 +64,21 @@ Brokerage exports & screenshots describe trades, positions, and account state. T
 - Skip a currency component if its amount is zero (keeps the chart clean).
 - This is the **canonical** path for tracking brokerage cash. The renderer combines these snapshots with post-snapshot flows (deposits, FX conversions, sells, and buy cash-legs derived from `trades`) so the displayed balance stays accurate between screenshots.
 
-### Brokerage periodic statement (`brokerage_periodic_statement`)
+### Brokerage periodic statement
 
 - Multi-page PDF generated by your brokerage. One Israeli broker's periodic statement is titled **דוח תקופתי**, has a brokerage account header, and carries a heading that says **הננו מתכבדים להציג את מצב חשבונך אצלנו נכון לתאריך: DD/MM/YYYY** — use these as format hints to recognize the doc type; adapt to your broker. Typically one per calendar month, cutoff = month-end.
 - **Two main sections:**
-  - **פירוט יתרות** (Holdings detail) — every position the account held on the cutoff date. Columns left-to-right when reading RTL output: `מספר נייר` (security #), `שם נייר` (name), `כמות` (quantity), `שער נוכחי` (current price in *agorot* — divide by 100 for ILS), `עלות הרכישה` (cost basis in ILS), `שווי נייר בשקלים` (market value in ILS), `אחוז מהתיק` (% of portfolio).
+  - **פירוט יתרות** (Holdings detail) — every position held on the cutoff date. One broker's column layout, left-to-right in RTL output (yours will differ — read the headers): `מספר נייר` (security #), `שם נייר` (name), `כמות` (quantity), `שער נוכחי` (current price in *agorot* — divide by 100 for ILS), `עלות הרכישה` (cost basis in ILS), `שווי נייר בשקלים` (market value in ILS), `אחוז מהתיק` (% of portfolio).
   - **פירוט תנועות** (Transactions detail) — every transaction during the report period: trades, dividends (`הפ/דיב` = dividend received, `מס/דיב` = dividend withholding tax), broker commissions (`עמלה`), FX conversions, internal deposits from Bank Hapoalim (`הפקדה לבנק בגין הפועלים`), receipts (`מס שולם` / `דולר ארה"ב קניה`), etc.
 - **Maps to:**
   - **`balances` — month-end cash snapshot** (one row per non-zero currency, dedup via `UNIQUE(account_id, as_of, component)`):
-    - **USD cash:** quantity of security `99028` (דולר ארה"ב). If a `99218 התחייבות דולרית` (USD liability) row is also present on the same statement, subtract its quantity from 99028's quantity to get net USD cash — the liability is a pending-settlement debit, not separately tracked.
+    - **USD cash** (one broker's security codes — find the equivalents on yours): quantity of security `99028` (דולר ארה"ב). If a `99218 התחייבות דולרית` (USD liability) row is also present on the same statement, subtract its quantity from 99028's quantity to get net USD cash — the liability is a pending-settlement debit, not separately tracked.
     - **GBP cash:** quantity of security `99069` (לישט). Skip if zero/absent.
     - **ILS cash:** value (in ILS) of the row labeled `יתרה כספית` or `יתרה פח"ק בבנק` (residual cash). Skip if zero. May be negative on rare days (slight overdraft) — store as-is.
   - **`fx_rates`:**
     - `(date=cutoff, base='USD', quote='ILS', rate = 99028.שער_נוכחי / 100)`.
     - `(date=cutoff, base='GBP', quote='ILS', rate = 99069.שער_נוכחי / 100)` if GBP held.
-  - **`documents` — one row** per PDF, `doc_type='brokerage_periodic_statement'`, `doc_date = cutoff`. Skip if `drive_id` already ingested.
+  - **`documents` — one row** per PDF (`doc_type` = a descriptive label like `brokerage-periodic-statement`), `doc_date = cutoff`. Skip if `drive_id` already ingested.
 - **Skip most transaction-level extraction.** The trades, deposits, and FX conversions visible in the report's פירוט תנועות section are already captured from other sources (`trade_history` XLSX, `investment_deposits` XLSX, `fx_conversion` screenshots) — re-ingesting them would create duplicate rows. The periodic statement's primary value to the dashboard is the **month-end cash snapshot** and the **FX rates on those dates**.
 - **EXCEPT: `הפ/דיב` (dividend) rows are extracted as confirmations.** Sync (step 5b) autonomously fetches live Yahoo dividend events every run and inserts them as synthetic `transactions` (`source_doc_id` points to a `doc_type='yahoo_dividend_estimate'` document) so brokerage cash stays accurate between snapshots. When a periodic statement is ingested:
   - For each `הפ/דיב` row in פירוט תנועות, parse `(pay_date, ticker, net amount as the statement shows it — already post-withholding)`.
@@ -88,18 +88,18 @@ Brokerage exports & screenshots describe trades, positions, and account state. T
 - `מס/דיב` (withholding tax) rows are informational only — the synthetic + statement amounts are already net of withholding, so don't insert these as separate transactions.
 - **The total portfolio value** (סה"כ row) is informational — it equals positions + cash and the dashboard already computes brokerage equity from `trades` × historical prices. **Do not** insert it as a `component=NULL` balance row; the brokerage account uses per-currency cash components only.
 
-### `*-stock-trade-confirmation-*.jpg` — single trade
+### Single trade confirmation
 
 - One row in `trades`. Read with Read tool's image support.
 
-## Brokerage sell screenshots (`brokerage_screenshot` for a sell event)
+## Brokerage sell screenshots
 
 When the user adds a screenshot documenting a **sell** (not just a position snapshot), the realized-cash row inserted into `transactions` must already be **net of Israeli taxes and brokerage fees**:
 
-1. **Capital-gains tax: 25%.** Subtract 25% of the realized gain (sell proceeds − cost basis of the lots being sold, FIFO). Apply this only to the gain portion, not to the principal returned.
-2. **Brokerage fee: 5 USD.** Subtract a flat $5 from the proceeds. (Adjust if the screenshot or note states a different fee.)
+1. **Capital-gains tax: 25%** (Israeli rate). Subtract 25% of the realized gain (sell proceeds − cost basis of the lots being sold, FIFO). Apply this only to the gain portion, not to the principal returned.
+2. **Brokerage fee:** subtract the fee shown on the confirmation or the user's note (e.g. a flat $5).
 
-Net realized cash = (sell_proceeds − fee) − 0.25 × max(0, gain). Insert as `transactions` on the brokerage account: `category='income'` (or `'realized_gain'` if a more specific bucket is preferred), positive amount in the security's currency, `counterparty=<ticker>`, `description='sell <shares>@<price>, net of 25% tax + $5 fee'`, `reference=<broker-confirmation-id>` if present.
+Net realized cash = (sell_proceeds − fee) − 0.25 × max(0, gain). Insert as `transactions` on the brokerage account: `category='income'` (or `'realized_gain'` if a more specific bucket is preferred), positive amount in the security's currency, `counterparty=<ticker>`, `description='sell <shares>@<price>, net of 25% tax + broker fee'`, `reference=<broker-confirmation-id>` if present.
 
 The user typically writes a one-line note on the screenshot when adding it — read that note for the fee and the cost-basis lots if specified. If the cost basis isn't on the screenshot, derive it from earlier `trades` rows on the same ticker (FIFO). Don't apply the 25% tax to the *unrealized* portion of the same position — that adjustment lives in the renderer's stocks-income calculation, not in the ingested row.
 

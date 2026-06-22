@@ -1,10 +1,10 @@
 # FX conversions — internal brokerage ILS↔USD conversions
 
-> Part of the [doc-types catalogue](./README.md) — principles, folder routing, and the full index live there.
+> Part of the [doc-types catalogue](./README.md) — principles, archetypes, and the full index live there.
 
 ## fx-conversions/ — internal brokerage ILS↔USD conversions
 
-### `*-fx-<from>-<to>-<src-amount>.<png|jpg>`
+### Brokerage FX conversion screenshot
 
 Screenshot from your brokerage's app showing a single ILS↔USD conversion happening **inside the brokerage** (ILS brokerage → USD brokerage or the reverse). The money is already at the brokerage at this point — these screenshots are **not** Hapoalim sub-account events. The brokerage account-header number on the screenshot is a brokerage sub-identifier, not a separate Hapoalim account.
 
@@ -14,7 +14,7 @@ The full money path looks like:
 2. **ILS brokerage → USD brokerage** ← the FX screenshot captures this leg
 3. **Buy stocks**, reducing the brokerage's USD cash; tracked via `trades` rows
 
-- **Typical content (Hebrew labels):**
+- **Typical content (one broker's Hebrew labels — vary by broker):**
   - `ממטבע` / `למטבע` — source / destination currency
   - `סכום המרה` — amount being converted (in the source currency)
   - `מועד הבקשה` — request date (DD.MM.YYYY HH:MM)

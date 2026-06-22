@@ -11,7 +11,7 @@ You ingest new documents from the user's Google Drive finance vault into the loc
 
 - Drive folder ID: the `[drive]` section of `.secrets/findash` (key `root_folder_id=…`, chmod 600). Folder structure: [`docs/drive-layout.md`](../../docs/drive-layout.md).
 - SQLite schema + conventions: [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md)
-- How each doc type maps to tables + the folder-routing table: [`docs/doc-types/`](../../docs/doc-types/README.md)
+- How each archetype maps to tables: [`docs/doc-types/`](../../docs/doc-types/README.md)
 - Password for protected payslip PDFs: the `[pdf-passwords]` section of `.secrets/findash` (one `pattern=password` line per file pattern)
 - rclone config: `./rclone.conf` (always pass `--config ./rclone.conf` to rclone)
 - Local DB: `data/finance.db`
@@ -24,29 +24,17 @@ You ingest new documents from the user's Google Drive finance vault into the loc
 Before scanning the rest of the vault, sort anything the user dropped in `<DRIVE_ROOT>/dump/`:
 
 - `rclone --config ./rclone.conf lsjson --drive-root-folder-id=<ROOT_ID> gdrive:dump/`
-- For each entry: download to `inbox/dump/<filename>`, inspect contents to determine doc_type (using your judgment + the catalogue in [`docs/doc-types/`](../../docs/doc-types/README.md)).
-- Match doc_type against the "Folder routing" table. Choose a destination folder + new filename per the convention.
-- Move on Drive: `rclone --config ./rclone.conf moveto gdrive:dump/<orig> gdrive:<dest-folder>/<new-name>`. Drive preserves the file's `drive_id`, so any existing `documents` row stays valid.
+- For each entry: download to `inbox/dump/<filename>`, read the contents, and judge which **archetype** it is — one of the five vault folders (see [`docs/doc-types/`](../../docs/doc-types/README.md)).
+- Move it into that folder on Drive with a descriptive name (no required filename format): `rclone --config ./rclone.conf moveto gdrive:dump/<orig> gdrive:<dest-folder>/<new-name>`. Drive preserves the file's `drive_id`, so any existing `documents` row stays valid.
+- Set `documents.doc_type` to a short free-text label describing the file (e.g. `harel-pension-statement`) — a human-readable note, not a value from a closed set.
 - If a file's `drive_id` already exists in `documents`, update `documents.drive_path` to the new path.
 - Delete the local `inbox/dump/<filename>` after the move succeeds.
 
-**Unfamiliar files create a new doc_type:**
-
-1. Propose a snake_case name (e.g. `insurance_statement`, `tax_certificate`), a destination folder under the vault, and a filename pattern.
-2. Append a row to the "Folder routing" table in [`docs/doc-types/README.md`](../../docs/doc-types/README.md), and a short prose section on the matching catalogue page describing what the type holds, how to read it, and which SQLite tables it populates.
-3. Move + rename the file per the new convention.
-4. Mention every newly-created doc_type in the sync report: `Created doc_type 'X' → folder Y. See docs/doc-types/.`
-
-**After creating a new folder, re-check existing files.** A new doc_type means the catalogue grew; some already-classified files may now belong in the new folder.
-
-- Re-list the whole vault (`rclone lsjson --recursive`).
-- For each file outside `dump/`, re-evaluate: does it fit the new doc_type better than its current folder?
-- For each match: `rclone moveto` to the new path; `UPDATE documents SET drive_path=? WHERE drive_id=?` for the affected row(s); list every move in the sync report under "Reorganized".
-- Skip this step entirely if no new doc_type was introduced this run — keeps normal syncs fast.
+**Unfamiliar files:** map to the nearest archetype by reading the content — most things fit one of the five folders. If a file genuinely belongs to a new financial domain (e.g. insurance), use judgment: give it a folder, add a short prose note to the matching catalogue page (what it holds, how to read it, which tables it feeds), and mention it in the sync report. There's **no routing table to grow and no vault re-scan** — the archetypes are stable.
 
 ### 2. Enumerate the rest of the vault
 
-For each top folder in `<DRIVE_ROOT>` (`payslips`, `investments`, `long-term-savings`, `full-statements`, and any folders introduced by `dump/` triage), recursively list files with `rclone --config ./rclone.conf lsjson --recursive --drive-root-folder-id=<ROOT_ID> gdrive:<folder>/`. Collect `(ID, Path, ModTime, Size)`.
+For each top folder in `<DRIVE_ROOT>` (the five archetype folders — `payslips`, `investments`, `long-term-savings`, `full-statements`, `fx-conversions` — plus any new-domain folder created during triage), recursively list files with `rclone --config ./rclone.conf lsjson --recursive --drive-root-folder-id=<ROOT_ID> gdrive:<folder>/`. Collect `(ID, Path, ModTime, Size)`.
 
 ### 3. Dedup
 
@@ -55,7 +43,7 @@ Query `documents.drive_id`. Skip anything already present.
 ### 4. Process each new file
 
 - Download to `inbox/` with `rclone copy --config ./rclone.conf --drive-root-folder-id=<ROOT_ID> gdrive:<path> ./inbox/`.
-- Classify by folder + filename (first pass), confirm by content (second pass). See [`docs/doc-types/`](../../docs/doc-types/README.md) for shapes.
+- Recognize the archetype from its folder, then confirm by reading the content. See [`docs/doc-types/`](../../docs/doc-types/README.md) for the shapes you'll see.
 - Extract the data. The *how* depends on format:
   - PDF (unlocked) → use the Read tool with the local file path.
   - PDF (password-protected payslip) → `qpdf --password=<pw> --decrypt <file> <tmp>`, read `tmp`, delete `tmp`. If `qpdf` is missing tell the user to install it (`sudo apt install -y qpdf`).
@@ -181,7 +169,7 @@ Two outputs: a per-file summary file picked up by the dashboard render, and a st
 
 **Per-file summary file** — append bullets to `data/last_sync_summary.md`. This file is read (and deleted) by `render-finance-dashboard` to send a second Telegram message after the dashboard HTML — see [`../render-finance-dashboard/SKILL.md`](../render-finance-dashboard/SKILL.md).
 
-- Two top-level sections: `## Ingested` (files that produced ≥1 row in any fact table) and `## Triaged` (files moved without ingest, new doc_types created, files reorganized into newly-introduced folders).
+- Two top-level sections: `## Ingested` (files that produced ≥1 row in any fact table) and `## Triaged` (files moved from `dump/` into their archetype folder without producing fact rows).
 - If the file already exists (the user ran sync twice before rendering), append under the existing section headers — don't duplicate headers. Create the file with both headers on first write.
 - Omit a section header entirely when it has no bullets this run.
 - If neither section has any bullets (a no-op resync), don't touch the file at all.
@@ -200,9 +188,8 @@ Each bullet is one short sentence in your voice — what was extracted, with the
 
 ## Triaged
 
-- moved screenshot.png → investments/<brokerage>/<YYYY-MM>-<action>-<ticker>.png
-- created doc_type 'insurance_statement' → folder insurance/; 1 file routed
-- reorganized: harel-pension-old.pdf → long-term-savings/harel-pension/2024-03.pdf
+- moved screenshot.png → investments/ (brokerage sell snapshot)
+- routed insurance-renewal.pdf → new insurance/ folder (new domain)
 ```
 
 **Stdout report** — print:
@@ -211,8 +198,6 @@ Each bullet is one short sentence in your voice — what was extracted, with the
 Triaged dump/: <N> files moved
   - <orig> → <new-path>
   - …
-Created new doc_types: <list, or "none">
-Reorganized (existing files re-filed to new folders): <list, or "none">
 Ingested: <M> new docs
   - X payslips, Y trades, Z balances, W transactions
 Backups: finance.db + finance-<timestamp>.db uploaded
@@ -226,7 +211,7 @@ Backups: finance.db + finance-<timestamp>.db uploaded
 - **OCR uncertainty: refuse over fabricate.** If a JPG number is unreadable, ask the user rather than guess.
 - **Idempotency:** running the skill twice should be a no-op (dedup via `documents.drive_id`; `dump/` is empty after the first triage).
 - **Atomicity:** if extraction fails halfway through a file, don't leave half its rows in the DB — wrap each file's inserts in a transaction. Insert into `documents` only after the file's rows commit successfully.
-- **A wrong doc_type name is recoverable; a wrong DB row is not.** Err toward creating a new doc_type when in doubt about routing; err toward asking the user when in doubt about parsing.
+- **A misfiled doc is recoverable; a wrong DB row is not.** Err toward routing to the nearest archetype when in doubt about placement; err toward asking the user when in doubt about parsing.
 
 ## When in doubt
 
