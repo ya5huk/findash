@@ -11,6 +11,7 @@ A Claude Code plugin for turning personal finance documents into an accurate SQL
   <img alt="SQLite" src="https://img.shields.io/badge/store-SQLite-2f5d3a?style=for-the-badge">
   <img alt="Drive first" src="https://img.shields.io/badge/source-Google%20Drive-b49b4a?style=for-the-badge">
   <img alt="Privacy first" src="https://img.shields.io/badge/privacy-local%20secrets-2a211d?style=for-the-badge">
+  <img alt="Built for Israel" src="https://img.shields.io/badge/built%20for-Israel-0038b8?style=for-the-badge">
 </p>
 
 FinDash is a Claude Code plugin (`findash`) bundling a set of skills plus a small deterministic toolchain:
@@ -19,6 +20,11 @@ FinDash is a Claude Code plugin (`findash`) bundling a set of skills plus a smal
 - **Scripts do the mechanics** — parse files, update SQLite, fetch prices, render HTML, send to Telegram.
 
 The core loop: drop source documents in a Google Drive vault → ask Claude to sync them into SQLite → render a self-contained dashboard. Telegram delivery and automatic bank/card fetch are both optional; the dashboard is always written locally as HTML.
+
+> [!NOTE]
+> **Built for Israel.** FinDash ships tuned for Israeli personal finance: automatic fetch covers **Bank Hapoalim** and **Cal** (via `israeli-bank-scrapers`), money reports in **₪ (ILS)**, the dashboard applies the **25% Israeli capital-gains tax** to securities profit, and the schema models Israeli **payslips** (income tax, Bituach Leumi) and **retirement vehicles** (pension + training fund / קרן השתלמות). Dates parse as **DD/MM** and Hebrew/RTL text is handled throughout. Many docs, prompts, and examples assume this locale.
+>
+> **Living elsewhere?** Nothing is locked in — fork it and swap the locale-specific pieces. See [Adapting to another country](#adapting-to-another-country).
 
 ## What It Does
 
@@ -260,6 +266,20 @@ You don't have to clone to use FinDash. From any Claude Code session:
 - Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
 - Password-protected payslips: requires `qpdf` and a `[pdf-passwords]` section in `.secrets/findash`. Without it, skip payslip PDFs or add the passwords later.
 - Interactive Brokers: ingests your IBKR **trade history** onto a mapped account (so you stop screenshotting trades), plus a reconciliation snapshot, via Anthropic's official **IBKR connector** — added through Claude's connector directory, not findash config. Interactive-only: run `/findash:fetch-investments` by hand (then re-render); it is not part of the unattended daily run. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
+
+## Adapting to another country
+
+FinDash is Israel-first, not Israel-only. The data model, scripts, and dashboard are generic; the locale-specific assumptions are concentrated in a handful of places, so a fork can re-point them without rewriting the core:
+
+| Area | Where it's assumed | Swap it for |
+|---|---|---|
+| **Banks / card fetch** | `scripts/fetch_bank.js`, the `[hapoalim]`/`[cal]` secrets, and `fetch-bank-data` | Your country's banks — `israeli-bank-scrapers` covers many Israeli institutions, or wire in another scraper/aggregator. |
+| **Capital-gains tax** | `ISRAELI_CAPGAINS_TAX = 0.25` in `scripts/render_dashboard.py`; the 25% dividend withholding in `sync-finance-data` | Your jurisdiction's rate(s). |
+| **Base currency** | `BASE_CCY = "ILS"` in `scripts/render_dashboard.py`; the `USD/ILS` & `GBP/ILS` FX pairs; `en-IL` number formatting | Your reporting currency and FX pairs. |
+| **Payslips & retirement** | `docs/doc-types/payslips.md`, `long-term-savings.md`, and the pension / training-fund columns in `scripts/init-db.sql` | Your payroll deductions and retirement products (401(k)/IRA, ISA, etc.). |
+| **Dates & language** | DD/MM ambiguity handling in `scripts/xlsx_to_rows.py`; Hebrew/RTL handling in the templates and renderer | Your locale's date format and language. |
+
+Most interpretation lives in the skills' prompts rather than hard-coded rules, so re-pointing those plus the constants above gets you most of the way. PRs that generalize these are welcome — see [Contributing](CONTRIBUTING.md).
 
 ## Docs
 
