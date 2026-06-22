@@ -19,4 +19,4 @@ Please keep contributions compatible with the repo's privacy model:
 - Store money as integer minor units, not floating point values.
 - Preserve the audit trail from every inserted finance row back to its source document.
 
-If you want to discuss an idea, mail me at [ilan147963@gmail.com](mailto:ilan147963@gmail.com).
+If you want to discuss an idea, find me on LinkedIn: [Ilan Yashuk](https://www.linkedin.com/in/ilan-yashuk/).

@@ -66,7 +66,7 @@ If a `dump/` file doesn't match any row above, the sync proposes a new doc_type,
 
 ## investments/ — brokerage exports & screenshots
 
-You currently use **Excellence Investment Management (אקסלנס)** as your brokerage. Files in this folder describe trades, positions, and brokerage account state.
+Brokerage exports & screenshots describe trades, positions, and account state. The examples below use one Israeli broker's formats — adapt field names/titles to your broker.
 
 ### `*-stock-events-transactions-*.xlsx` — full trade history
 
@@ -77,9 +77,9 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
 ### `*-investment-deposits-*.xlsx` — cash deposits into brokerage
 
 - **Maps to** `transactions` on the **brokerage account**: `category='deposit'`, positive amount. Store the ILS source + rate in `description` as `from <ILS> ILS @ <rate>`.
-- The same money usually shows up as an outflow on a Hapoalim checking statement (counterparty: אקסלנס). Both rows should exist — they're not duplicates, they're the two sides of a transfer. The `reference` from the bank side helps tie them together.
+- The same money usually shows up as an outflow on a Hapoalim checking statement (counterparty: `<your brokerage>`). Both rows should exist — they're not duplicates, they're the two sides of a transfer. The `reference` from the bank side helps tie them together.
 - **Date disambiguation — the DD/MM↔MM/DD gotcha (do this every ingest).** The Date column is user-typed Israeli DD/MM/YYYY, but Excel may have stored an *ambiguous* cell (day ≤ 12, so the day could pass as a month) under a MM/DD reading — e.g. `07/04` (7 Apr) saved as 4 Jul. Cells with day > 12 are self-resolving. `xlsx_to_rows.py` lists every such cell in its `ambiguous_dates` output as `{cell, value, swapped}`. For each, pick `value` vs `swapped` by the same cross-checks as `manual_networth_log` above: (1) **FX match** — compare the row's `$ price` to `fx_rates` on both candidate dates; the user's recorded rate runs a small spread *above* mid, so the closer candidate (after allowing ~0.0–0.06) wins, and a tight match is decisive; (2) **cumulative `Total ($)` / row order** — the sheet is strictly chronological top→bottom, so the chosen dates must keep deposits monotonic in time. (One past sheet had all 7 ambiguous cells flipped; both checks agreed unanimously.)
-- **Do not seed `fx_rates` from this sheet.** The `$ price` is the user's transacted rate (carries a spread) and lives only in the transaction `description`. Valuation FX comes from Yahoo; the authoritative in-brokerage conversion rate is captured by the `fx_conversion` screenshot (which *does* write `fx_rates`, `source='document'`), not here. Seeding a spread-laden rate — worse, on a mis-parsed date — silently corrupts USD valuations (this is the exact bug that put a bogus `3.84` USD→ILS into `fx_rates` on a non-existent July date).
+- **Do not seed `fx_rates` from this sheet.** The `$ price` is the user's transacted rate (carries a spread) and lives only in the transaction `description`. Valuation FX comes from Yahoo; the authoritative in-brokerage conversion rate is captured by the `fx_conversion` screenshot (which *does* write `fx_rates`, `source='document'`), not here. Seeding a spread-laden rate — worse, on a mis-parsed date — silently corrupts USD valuations (a mis-parsed deposit date once seeded a bogus FX rate on a date the market never traded).
 
 ### `*-net-worth-*.xlsx` — brokerage account value snapshot
 
@@ -100,35 +100,35 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
   - Cash → primary Hapoalim checking account, `component=NULL`.
   - Locked-Poalim sub-amount → Hapoalim Digital Sprint savings account, `component=NULL`. Only valid for dates ≥ the Sprint open date recorded in the DB.
   - **Skip Pension and Training Fund** rows — the log gives single totals but the DB requires component breakdown (`tagmul_employee` / `tagmul_employer` / `pitsuyim`). Guessing the split would corrupt the chart.
-  - **Skip Hafenix equity totals** — the dashboard computes brokerage value from `trades` × historical prices; don't double-source. Hafenix **cash** is now tracked separately, ideally via a Hafenix balance screenshot (see `brokerage_screenshot — Hafenix balance screenshot` below). If a `manual_networth_log` entry explicitly breaks out Hafenix cash by currency, insert those as `balances` rows with `component='cash_usd' | 'cash_gbp' | 'cash_ils'` (screenshot is still the preferred source).
+  - **Skip brokerage equity totals** — the dashboard computes brokerage value from `trades` × historical prices; don't double-source. Brokerage **cash** is now tracked separately, ideally via a brokerage balance screenshot (see `brokerage_screenshot — brokerage balance screenshot` below). If a `manual_networth_log` entry explicitly breaks out brokerage cash by currency, insert those as `balances` rows with `component='cash_usd' | 'cash_gbp' | 'cash_ils'` (screenshot is still the preferred source).
 - **Date hygiene — the Excel-locale gotcha.** The user types Israeli DD/MM/YYYY. Cells stored as text (e.g. `14/02/2026`) come through verbatim; cells Excel auto-converted to date serials come through ISO (`2026-02-14`). When the day is >12, the DD/MM interpretation is the only legal one, so the date is recoverable either way. **When day and month are both ≤ 12, the auto-converted ISO output may be wrong**: e.g. `2025-04-12` is really `2025-12-04` and `2025-04-10` is really `2025-10-04`. Resolve ambiguous cases using these checks, in order of decisiveness:
   1. **FX-rate column (most decisive).** Each entry's row has the user's `1$` and `1£` cells (cols 9, 10). Look up the actual USD/ILS rate in `fx_rates` for each candidate date — the one matching the typed rate within a few mils is the right date. Tight match (Δ ≤ 0.01) is conclusive; mismatch (Δ > 0.05) is conclusive in the other direction.
   2. **Cross-doc references in `Income since last entry` / `Notes` columns.** A "+<net salary> job" entry must postdate the matching payslip; a "now <total> USD were ever transferred" cumulative tally pins the date between the deposit that reached that total and the next deposit.
-  3. **Sprint balance monotonicity.** Sprint pays ~2.3% nominal annually with no withdrawals, so its balance is strictly increasing. Any candidate date that produces a Sprint balance smaller than a later balance is wrong.
-  4. **Sprint open date.** Sprint opened 2025-05-18; any candidate before that is impossible.
+  3. **Sprint balance monotonicity.** An interest-bearing savings balance increases over time absent withdrawals, so the Sprint balance is strictly increasing. Any candidate date that produces a Sprint balance smaller than a later balance is wrong.
+  4. **Sprint open date.** Use the Sprint (savings) account's `opened_on` from the `accounts` table; any candidate date before it is impossible.
 - **Dedup:** use `INSERT OR IGNORE` against `UNIQUE(account_id, as_of, component)`. The log's entries should not overlap with official statement closing balances; if they do (e.g. a manual entry on the same day as a Hapoalim XLSX closing), prefer the statement.
 
 ### `*-bank-hapoalim-capital-market-*.jpg` — Hapoalim brokerage screenshot
 
 - Read with Read tool's image support. Transcribe positions and/or total value. Treat as a position snapshot if listing securities, or a `balances` row if just a total.
 
-### Hafenix balance screenshot (`brokerage_screenshot` for Hafenix cash)
+### Brokerage balance screenshot (`brokerage_screenshot` for brokerage cash)
 
-- Screenshot from Hafenix's app showing the account's cash holdings, typically broken out per currency (USD, GBP, ILS). May also include a positions list — those are informational only; positions are tracked via `trades`.
-- **Maps to** `balances` on the Hafenix brokerage account, one row per non-zero currency:
+- Screenshot from your brokerage's app showing the account's cash holdings, typically broken out per currency (USD, GBP, ILS). May also include a positions list — those are informational only; positions are tracked via `trades`.
+- **Maps to** `balances` on the brokerage account, one row per non-zero currency:
   - `as_of = <screenshot date>`
   - `component = 'cash_usd' | 'cash_gbp' | 'cash_ils'` (lowercase ISO currency)
   - `currency = 'USD' | 'GBP' | 'ILS'`
   - `amount_minor = <amount in minor units of that currency>` (cents/pence/agorot)
   - `source_doc_id = <doc>`
 - **Dedup:** `INSERT OR IGNORE` on `UNIQUE(account_id, as_of, component)`. Multiple currencies on the same date insert as separate rows because `component` differs.
-- **Do not** write a `component=NULL` row for Hafenix — that slot was used by the deprecated "total brokerage value" pattern and would conflict with the per-currency cash rows.
+- **Do not** write a `component=NULL` row for the brokerage account — that slot was used by the deprecated "total brokerage value" pattern and would conflict with the per-currency cash rows.
 - Skip a currency component if its amount is zero (keeps the chart clean).
-- This is the **canonical** path for tracking Hafenix cash. The renderer combines these snapshots with post-snapshot flows (deposits, FX conversions, sells, and buy cash-legs derived from `trades`) so the displayed balance stays accurate between screenshots.
+- This is the **canonical** path for tracking brokerage cash. The renderer combines these snapshots with post-snapshot flows (deposits, FX conversions, sells, and buy cash-legs derived from `trades`) so the displayed balance stays accurate between screenshots.
 
-### Hafenix periodic statement (`brokerage_periodic_statement`)
+### Brokerage periodic statement (`brokerage_periodic_statement`)
 
-- Multi-page PDF generated by Hafenix/Excellence with the title **דוח תקופתי**, a brokerage account header, and a heading that says **הננו מתכבדים להציג את מצב חשבונך אצלנו נכון לתאריך: DD/MM/YYYY**. Typically one per calendar month, cutoff = month-end.
+- Multi-page PDF generated by your brokerage. One Israeli broker's periodic statement is titled **דוח תקופתי**, has a brokerage account header, and carries a heading that says **הננו מתכבדים להציג את מצב חשבונך אצלנו נכון לתאריך: DD/MM/YYYY** — use these as format hints to recognize the doc type; adapt to your broker. Typically one per calendar month, cutoff = month-end.
 - **Two main sections:**
   - **פירוט יתרות** (Holdings detail) — every position the account held on the cutoff date. Columns left-to-right when reading RTL output: `מספר נייר` (security #), `שם נייר` (name), `כמות` (quantity), `שער נוכחי` (current price in *agorot* — divide by 100 for ILS), `עלות הרכישה` (cost basis in ILS), `שווי נייר בשקלים` (market value in ILS), `אחוז מהתיק` (% of portfolio).
   - **פירוט תנועות** (Transactions detail) — every transaction during the report period: trades, dividends (`הפ/דיב` = dividend received, `מס/דיב` = dividend withholding tax), broker commissions (`עמלה`), FX conversions, internal deposits from Bank Hapoalim (`הפקדה לבנק בגין הפועלים`), receipts (`מס שולם` / `דולר ארה"ב קניה`), etc.
@@ -142,13 +142,13 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
     - `(date=cutoff, base='GBP', quote='ILS', rate = 99069.שער_נוכחי / 100)` if GBP held.
   - **`documents` — one row** per PDF, `doc_type='brokerage_periodic_statement'`, `doc_date = cutoff`. Skip if `drive_id` already ingested.
 - **Skip most transaction-level extraction.** The trades, deposits, and FX conversions visible in the report's פירוט תנועות section are already captured from other sources (`trade_history` XLSX, `investment_deposits` XLSX, `fx_conversion` screenshots) — re-ingesting them would create duplicate rows. The periodic statement's primary value to the dashboard is the **month-end cash snapshot** and the **FX rates on those dates**.
-- **EXCEPT: `הפ/דיב` (dividend) rows are extracted as confirmations.** Sync (step 5b) autonomously fetches live Yahoo dividend events every run and inserts them as synthetic `transactions` (`source_doc_id` points to a `doc_type='yahoo_dividend_estimate'` document) so Hafenix cash stays accurate between snapshots. When a periodic statement is ingested:
+- **EXCEPT: `הפ/דיב` (dividend) rows are extracted as confirmations.** Sync (step 5b) autonomously fetches live Yahoo dividend events every run and inserts them as synthetic `transactions` (`source_doc_id` points to a `doc_type='yahoo_dividend_estimate'` document) so brokerage cash stays accurate between snapshots. When a periodic statement is ingested:
   - For each `הפ/דיב` row in פירוט תנועות, parse `(pay_date, ticker, net amount as the statement shows it — already post-withholding)`.
-  - Delete any matching synthetic transaction on the Hafenix brokerage account: `counterparty=ticker, ABS(julianday(date) - julianday(row_date)) <= 5, source doc has doc_type='yahoo_dividend_estimate'`.
-  - Insert the real row referencing the statement's `documents.id` — now `source` is a real Hafenix doc, the dashboard tags it "confirmed".
-  - Then run the **snapshot-supersession cleanup** described in `skills/sync-finance-data/SKILL.md` step 5b: drop remaining synthetic dividend transactions on the Hafenix brokerage account dated `<= cutoff_date`, since the new snapshot's cash component already includes them.
+  - Delete any matching synthetic transaction on the brokerage account: `counterparty=ticker, ABS(julianday(date) - julianday(row_date)) <= 5, source doc has doc_type='yahoo_dividend_estimate'`.
+  - Insert the real row referencing the statement's `documents.id` — now `source` is a real brokerage doc, the dashboard tags it "confirmed".
+  - Then run the **snapshot-supersession cleanup** described in `skills/sync-finance-data/SKILL.md` step 5b: drop remaining synthetic dividend transactions on the brokerage account dated `<= cutoff_date`, since the new snapshot's cash component already includes them.
 - `מס/דיב` (withholding tax) rows are informational only — the synthetic + statement amounts are already net of withholding, so don't insert these as separate transactions.
-- **The total portfolio value** (סה"כ row) is informational — it equals positions + cash and the dashboard already computes brokerage equity from `trades` × historical prices. **Do not** insert it as a `component=NULL` balance row; per `[[project_hafenix_cash_tracking]]` Hafenix uses per-currency components only.
+- **The total portfolio value** (סה"כ row) is informational — it equals positions + cash and the dashboard already computes brokerage equity from `trades` × historical prices. **Do not** insert it as a `component=NULL` balance row; per `[[project_brokerage_cash_tracking]]` the brokerage account uses per-currency components only.
 
 ### `*-stock-trade-confirmation-*.jpg` — single trade
 
@@ -204,7 +204,7 @@ You currently use **Excellence Investment Management (אקסלנס)** as your br
 
 ### Hapoalim bank FX notices (`bank_fx_notice`)
 
-- Bank-side foreign-currency purchase/sale notices for the checking account, distinct from Hafenix internal FX screenshots.
+- Bank-side foreign-currency purchase/sale notices for the checking account, distinct from your brokerage's internal FX screenshots.
 - Insert document-derived `fx_rates` only when the notice states the actual conversion rate. Insert checking-account transactions only when the statement side is not already present and the cash impact is unambiguous.
 
 ## full-statements/ — checking & credit card
@@ -244,7 +244,7 @@ Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`).
 <YYYY-MM-DD>-<company>-<acct-suffix>-api-fetch[__tag__tag…].(json|notes.md)
 ```
 
-`<YYYY-MM-DD>` is the fetch date (not txn date). `<company>` ∈ {`hapoalim`, `cal`}. `<acct-suffix>` is the last 4 of the institution's `accountNumber`. Tags are compact observation markers (`roundtrip-5000-excellence`, `installments-amazon`, `fx-usd-zara`, `pending-3`, etc.); when none apply (quiet day) the filename has no `__tag` segment.
+`<YYYY-MM-DD>` is the fetch date (not txn date). `<company>` ∈ {`hapoalim`, `cal`}. `<acct-suffix>` is the last 4 of the institution's `accountNumber`. Tags are compact observation markers (`roundtrip-5000-brokerage`, `installments-amazon`, `fx-usd-zara`, `pending-3`, etc.); when none apply (quiet day) the filename has no `__tag` segment.
 
 #### `bank_api_dump` (Hapoalim raw JSON)
 
@@ -256,7 +256,7 @@ Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`).
 #### `bank_api_notes` (Hapoalim sidecar)
 
 - Plain markdown. Header line names the date + company + acct suffix. Body is a bulleted list of observations the skill made at fetch time. Vocabulary: `roundtrip`, `internal transfer`, `first-time counterparty`, `amount anomaly`.
-- Treat each bullet as a **hint, not ground truth.** Verify against the JSON and against cross-source documents (Hafenix periodic statements, FX screenshots) before acting on it. A "first-time counterparty" might just be a known counterparty whose name changed on the bank side.
+- Treat each bullet as a **hint, not ground truth.** Verify against the JSON and against cross-source documents (brokerage periodic statements, FX screenshots) before acting on it. A "first-time counterparty" might just be a known counterparty whose name changed on the bank side.
 
 #### `cal_api_dump` (Cal raw JSON)
 
@@ -285,30 +285,30 @@ Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`).
 - Same shape + treatment as `bank_api_notes`. Bullet vocabulary: installment chains, FX merchants, first-time merchants, pending status, cross-source divergence (Cal total vs Hapoalim's monthly `card_payment` row).
 - Hints, not ground truth.
 
-## fx-conversions/ — internal Hafenix ILS↔USD conversions
+## fx-conversions/ — internal brokerage ILS↔USD conversions
 
 ### `*-fx-<from>-<to>-<src-amount>.<png|jpg>`
 
-Screenshot from Hafenix's app showing a single ILS↔USD conversion happening **inside the brokerage** (ILS Hafenix → USD Hafenix or the reverse). The money is already at Hafenix at this point — these screenshots are **not** Hapoalim sub-account events. The Hafenix account-header number on the screenshot is a Hafenix sub-identifier, not a separate Hapoalim account.
+Screenshot from your brokerage's app showing a single ILS↔USD conversion happening **inside the brokerage** (ILS brokerage → USD brokerage or the reverse). The money is already at the brokerage at this point — these screenshots are **not** Hapoalim sub-account events. The brokerage account-header number on the screenshot is a brokerage sub-identifier, not a separate Hapoalim account.
 
 The full money path looks like:
 
-1. **ILS Hapoalim → ILS Hafenix** (the actual deposit; recorded from the `investment_deposits` XLSX with `category='deposit'` on the brokerage account, USD-denominated rows where each row's description embeds the ILS source and rate)
-2. **ILS Hafenix → USD Hafenix** ← the FX screenshot captures this leg
-3. **Buy stocks**, reducing Hafenix's USD cash; tracked via `trades` rows
+1. **ILS Hapoalim → ILS brokerage** (the actual deposit; recorded from the `investment_deposits` XLSX with `category='deposit'` on the brokerage account, USD-denominated rows where each row's description embeds the ILS source and rate)
+2. **ILS brokerage → USD brokerage** ← the FX screenshot captures this leg
+3. **Buy stocks**, reducing the brokerage's USD cash; tracked via `trades` rows
 
 - **Typical content (Hebrew labels):**
   - `ממטבע` / `למטבע` — source / destination currency
   - `סכום המרה` — amount being converted (in the source currency)
   - `מועד הבקשה` — request date (DD.MM.YYYY HH:MM)
-  - `אסמכתא` — Hafenix reference number (use as `transactions.reference`)
+  - `אסמכתא` — brokerage reference number (use as `transactions.reference`)
   - `שער המרה` — FX rate applied
   - `סטטוס פעולה` — operation status (טופל = processed)
 - **Maps to:**
-  - `transactions` — one row on the brokerage account with `category='deposit'`, `currency='USD'`, amount = converted USD (`src / rate` rounded to 2dp), `counterparty='Excellence/Hafenix'`, `reference=<אסמכתא>`, `description='from <src> ILS @ <rate>'`. This matches the convention used by the `investment_deposits` XLSX, so the FX shows up correctly in cumulative-deposits tracking.
+  - `transactions` — one row on the brokerage account with `category='deposit'`, `currency='USD'`, amount = converted USD (`src / rate` rounded to 2dp), `counterparty='<your brokerage>'`, `reference=<אסמכתא>`, `description='from <src> ILS @ <rate>'`. This matches the convention used by the `investment_deposits` XLSX, so the FX shows up correctly in cumulative-deposits tracking.
   - `fx_rates` — one row: `(date, USD, ILS, rate)` so the dashboard can value USD holdings on/around this date.
-- **Do NOT insert** debit/credit pairs on Hapoalim sub-accounts. The FX is happening entirely inside Hafenix; Hapoalim's ledger has nothing to record on this date.
-- **Sign of converted amount:** Hafenix rounds; if the screenshot only shows the source amount, compute the USD amount (`src / rate` or `src * rate` depending on direction) and proceed.
+- **Do NOT insert** debit/credit pairs on Hapoalim sub-accounts. The FX is happening entirely inside the brokerage; Hapoalim's ledger has nothing to record on this date.
+- **Sign of converted amount:** the brokerage rounds; if the screenshot only shows the source amount, compute the USD amount (`src / rate` or `src * rate` depending on direction) and proceed.
 
 ---
 
@@ -345,7 +345,7 @@ The dashboard's Stocks-income figure assumes realized rows are already net (no r
 These are situations where rule-based categorization gets things wrong. The skill should *think*, not pattern-match:
 
 - **Ambiguous / no-counterparty outflows: reason from history, don't stamp the literal category.** A `שיק` (cheque) or any opaque debit with no `counterparty` must not be auto-tagged `check` and left. First ask "what was a charge like this in the past?" — query the account's own history for a matching signature (amount band, monthly cadence, sequential `reference`) and inherit the category those rows were given. The canonical case (the recurring rent cheque → `rent`) has its exact query + criteria in **Expense vs transfer classification** above. **This applies identically to rows arriving via `bank_api_dump`** (the Hapoalim API feed), not just XLSX/PDF statements — the source format never changes the judgment. A literal placeholder like `check` is the fallback *only* when history shows no match.
-- **Transfers between your own accounts are not expenses.** Hapoalim → Excellence is `category='transfer'`. Hapoalim checking → Hapoalim sub-account is `category='transfer'`. The same money will show as a credit on the receiving account — both rows are correct, they're two sides of one event.
+- **Transfers between your own accounts are not expenses.** Hapoalim → your brokerage is `category='transfer'`. Hapoalim checking → Hapoalim sub-account is `category='transfer'`. The same money will show as a credit on the receiving account — both rows are correct, they're two sides of one event.
 - **Family transfers may or may not be a gift.** "זיכוי מדיסקונט" from a relative might be a loan repayment, a gift, or shared expense settlement. Default to `category='transfer', counterparty=<name>` and let the user re-categorize manually if needed.
 - **Salary credits** ("משכורת-נט") are `category='salary'` but they also have a corresponding payslip. Don't double-count: the payslip is the source of truth for gross/deductions; the bank credit is just the net flow.
 - **Credit-card consolidation entries** ("כאל", "Cal", "ויזה") on a checking statement are not individual purchases — they're the monthly payment to the card. Categorize as `card_payment` (or `transfer`) on the checking account; the actual purchases live on the credit-card statement.

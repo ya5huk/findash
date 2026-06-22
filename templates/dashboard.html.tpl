@@ -119,7 +119,7 @@
           <button class="chart-range" data-range="all">All</button>
         </div>
         <canvas id="chart-dividends" height="120"></canvas>
-        <p class="footnote">Live Yahoo dividend events for held positions (shares held on each ex-date), net of 25% Israeli withholding. Bars show dividends received per month (per quarter in the All view) in USD, stacked by payer (top 5 + Other) — hover for the per-stock breakdown. <em>absorbed</em> = already folded into a Hafenix cash snapshot; <em>recorded</em> <strong>✓</strong> = itemized from a statement.</p>
+        <p class="footnote">Live Yahoo dividend events for held positions (shares held on each ex-date), net of 25% Israeli withholding. Bars show dividends received per month (per quarter in the All view) in USD, stacked by payer (top 5 + Other) — hover for the per-stock breakdown. <em>absorbed</em> = already folded into a brokerage cash snapshot; <em>recorded</em> <strong>✓</strong> = itemized from a statement.</p>
       </div>
     </details>
 

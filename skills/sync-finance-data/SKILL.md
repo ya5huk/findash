@@ -64,7 +64,7 @@ Query `documents.drive_id`. Skip anything already present.
 - Insert rows into the right tables (see [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) for column conventions). Always include `source_doc_id` linking back to `documents`.
 - **Use judgment** when categorizing transactions and matching cross-document events. Read [`docs/doc-types.md`](../../docs/doc-types.md) "Judgment calls" before doing any classification work.
 - **Closing balance:** for bank statements, read the running-balance column on the last row (Hapoalim XLSX → יתרה בש"ח). Do NOT sum the in-window transactions and call that the balance — that only works if the statement covers the account's entire lifetime. If no running-balance is visible, skip the `balances` insert and add a note to `documents.notes`.
-- **Hafenix balance screenshots:** when a Hafenix screenshot shows cash holdings per currency, insert one `balances` row per non-zero currency with `component='cash_usd' | 'cash_gbp' | 'cash_ils'`. See [`docs/doc-types.md`](../../docs/doc-types.md) "Hafenix balance screenshot" for the field details. The renderer combines these snapshots with subsequent flows so cash stays accurate between uploads.
+- **Brokerage balance screenshots:** when a brokerage balance screenshot shows cash holdings per currency, insert one `balances` row per non-zero currency with `component='cash_usd' | 'cash_gbp' | 'cash_ils'`. See [`docs/doc-types.md`](../../docs/doc-types.md) "brokerage balance screenshot" for the field details. The renderer combines these snapshots with subsequent flows so cash stays accurate between uploads.
 - **Explicit FX rates in docs are authoritative.** When a doc shows the rate the user actually transacted at (e.g. a Hapoalim USD-purchase line "1,000 USD @ 3.30 ILS" on a day Yahoo closed 3.28), insert it into `fx_rates` with `source='document'`. Use `INSERT INTO fx_rates (...) VALUES (..., 'document') ON CONFLICT (date, base_currency, quote_currency) DO UPDATE SET rate=excluded.rate, source='document'` — docs always win over the Yahoo refresh. If the doc shows a converted ILS amount without naming the rate, derive it (`ils_amount / fx_amount`) and write it the same way.
 
 ### 5. Refresh price + FX cache
@@ -75,7 +75,7 @@ Partial failures (a ticker 429s twice) are logged and recovered by the next run 
 
 ### 5b. Refresh dividend transactions (autonomous, every run)
 
-Dividends are **real cash** — they bump Hafenix's per-currency cash buckets. Sync owns this regardless of whether a Hafenix periodic statement happens to be in the vault this run. The goal: between snapshots, `transactions` should reflect every dividend that has actually been paid into Hafenix.
+Dividends are **real cash** — they bump your brokerage's per-currency cash buckets. Sync owns this regardless of whether a brokerage periodic statement happens to be in the vault this run. The goal: between snapshots, `transactions` should reflect every dividend that has actually been paid into the brokerage account.
 
 For each currently-held security (the same set computed in step 5), run:
 
@@ -94,10 +94,10 @@ For each past event, decide whether to insert a synthetic transaction:
    ```
    If 0, skip — you didn't own it on the ex-date.
 
-2. **Find the security's last cash snapshot date** on the Hafenix brokerage account for its currency (USD/GBP/ILS). Resolve `<hafenix_account_id>` from `accounts` before running the query:
+2. **Find the security's last cash snapshot date** on the brokerage account for its currency (USD/GBP/ILS). Resolve `<brokerage_account_id>` from `accounts` before running the query (the brokerage account that has trades):
    ```sql
    SELECT MAX(as_of) FROM balances
-   WHERE account_id = <hafenix_account_id> AND component = ?  -- 'cash_usd' | 'cash_gbp' | 'cash_ils'
+   WHERE account_id = <brokerage_account_id> AND component = ?  -- 'cash_usd' | 'cash_gbp' | 'cash_ils'
    ```
    Skip the event if `pay_date <= last_snapshot_date` — the snapshot's cash component already includes it; a synthetic transaction would double-count.
 
@@ -115,16 +115,18 @@ For each past event, decide whether to insert a synthetic transaction:
       'yahoo-div-<ticker>-<pay_date>',
       'yahoo_dividend_estimate',
       '<pay_date>',
-      'Live Yahoo dividend estimate (net of 25% Israeli withholding). Will be superseded if a Hafenix periodic statement covering this date is later ingested.');
+      'Live Yahoo dividend estimate (net of 25% Israeli withholding). Will be superseded if a brokerage periodic statement covering this date is later ingested.');
 
    -- Look up the doc id (whether just inserted or pre-existing):
    SELECT id FROM documents WHERE drive_id = 'yahoo:div:<ticker>:<pay_date>';
 
-   -- Only insert the transaction if one doesn't already reference this doc:
+   -- Resolve <brokerage_account_id> from the accounts table first (the brokerage
+   -- account that has trades). Only insert the transaction if one doesn't already
+   -- reference this doc:
    INSERT INTO transactions
      (account_id, date, amount_minor, currency, category, counterparty,
       description, source_doc_id)
-   SELECT 7, '<pay_date>', <net_minor>, '<security_ccy>', 'dividend', '<ticker>',
+   SELECT <brokerage_account_id>, '<pay_date>', <net_minor>, '<security_ccy>', 'dividend', '<ticker>',
           '<shares> × <per_share> × 0.75 net (Yahoo estimate)', <doc_id>
    WHERE NOT EXISTS (
      SELECT 1 FROM transactions WHERE source_doc_id = <doc_id>
@@ -133,14 +135,14 @@ For each past event, decide whether to insert a synthetic transaction:
 
 The `INSERT OR IGNORE` on documents (uniqueness via `drive_id`) plus the `WHERE NOT EXISTS` on transactions makes the whole step a no-op on re-runs.
 
-**Upsert when a Hafenix periodic statement is processed** (see step 4 + `docs/doc-types.md` "Hafenix periodic statement"): for each real `הפ/דיב` row extracted, delete any matching synthetic transaction first, then insert the real one with `source_doc_id` = the statement's doc id. Match by `(account_id=<hafenix_account_id>, counterparty=<ticker>, ABS(julianday(date) - julianday(<row_date>)) <= 5)` filtered to synthetic docs:
+**Upsert when a brokerage periodic statement is processed** (see step 4 + `docs/doc-types.md` "brokerage periodic statement"): for each real `הפ/דיב` row extracted, delete any matching synthetic transaction first, then insert the real one with `source_doc_id` = the statement's doc id. Match by `(account_id=<brokerage_account_id>, counterparty=<ticker>, ABS(julianday(date) - julianday(<row_date>)) <= 5)` filtered to synthetic docs:
 
 ```sql
 DELETE FROM transactions
 WHERE id IN (
   SELECT t.id FROM transactions t
   JOIN documents d ON d.id = t.source_doc_id
-  WHERE t.account_id = <hafenix_account_id>
+  WHERE t.account_id = <brokerage_account_id>
     AND t.category = 'dividend'
     AND t.counterparty = '<ticker>'
     AND ABS(julianday(t.date) - julianday('<row_date>')) <= 5
@@ -148,14 +150,14 @@ WHERE id IN (
 );
 ```
 
-**Snapshot supersession.** After inserting any new Hafenix balance snapshot at date `D` for any currency component (`cash_usd|cash_gbp|cash_ils`), drop synthetic dividend transactions on the Hafenix brokerage account dated `<= D` — the snapshot's cash component now reflects them, keeping the synthetics would double-count:
+**Snapshot supersession.** After inserting any new brokerage balance snapshot at date `D` for any currency component (`cash_usd|cash_gbp|cash_ils`), drop synthetic dividend transactions on the brokerage account dated `<= D` — the snapshot's cash component now reflects them, keeping the synthetics would double-count:
 
 ```sql
 DELETE FROM transactions
 WHERE id IN (
   SELECT t.id FROM transactions t
   JOIN documents d ON d.id = t.source_doc_id
-  WHERE t.account_id = <hafenix_account_id>
+  WHERE t.account_id = <brokerage_account_id>
     AND t.category = 'dividend'
     AND t.date <= '<D>'
     AND d.doc_type = 'yahoo_dividend_estimate'
@@ -198,7 +200,7 @@ Each bullet is one short sentence in your voice — what was extracted, with the
 
 ## Triaged
 
-- moved screenshot.png → investments/hafenix/2026-05-buy-msft.png
+- moved screenshot.png → investments/<brokerage>/<YYYY-MM>-<action>-<ticker>.png
 - created doc_type 'insurance_statement' → folder insurance/; 1 file routed
 - reorganized: harel-pension-old.pdf → long-term-savings/harel-pension/2024-03.pdf
 ```
@@ -218,7 +220,7 @@ Backups: finance.db + finance-<timestamp>.db uploaded
 
 ## Principles to apply throughout
 
-- **Transfers between the user's own accounts are not expenses.** Hapoalim → Excellence brokerage = `transfer`, not `expense`.
+- **Transfers between the user's own accounts are not expenses.** Hapoalim → your brokerage = `transfer`, not `expense`.
 - **Filename amounts are sanity checks, not truth.** Always trust the content.
 - **Pension/study-fund statements produce multi-component balance rows.** See [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) for the `component` column.
 - **OCR uncertainty: refuse over fabricate.** If a JPG number is unreadable, ask the user rather than guess.

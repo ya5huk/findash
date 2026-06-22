@@ -33,7 +33,7 @@ CREATE TABLE accounts (
   id                INTEGER PRIMARY KEY,
   name              TEXT NOT NULL UNIQUE,                  -- human-readable
   kind              TEXT NOT NULL,                         -- checking | savings | brokerage | credit_card | pension | study_fund | cash | other
-  institution       TEXT NOT NULL,                         -- 'Bank Hapoalim', 'Harel', 'Excellence', 'Cash', ...
+  institution       TEXT NOT NULL,                         -- 'Bank Hapoalim', 'Harel', 'Brokerage', 'Cash', ...
   external_id       TEXT,                                  -- account/policy number at institution
   currency          TEXT NOT NULL,                         -- ILS, USD, ...
   opened_on         TEXT,
@@ -71,7 +71,7 @@ CREATE TABLE transactions (
   category        TEXT,                                    -- salary | deposit | withdrawal | fee | interest | dividend | tax | transfer | check | card_charge | risk_insurance | rent | groceries | ...
                                                             -- Open vocab. Use judgment (see docs/doc-types.md).
   component       TEXT,                                    -- as in balances
-  counterparty    TEXT,                                    -- 'Excellence Investments', 'Sling', family name, etc.
+  counterparty    TEXT,                                    -- 'Brokerage', 'Sling', family name, etc.
   reference       TEXT,                                    -- אסמכתא; helps with dedup across docs
   description     TEXT,                                    -- free text from source doc
   source_doc_id   INTEGER REFERENCES documents(id) ON DELETE SET NULL

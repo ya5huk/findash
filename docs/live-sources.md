@@ -32,8 +32,8 @@ connector directory (a claude.ai connector, *not* declared in `plugin.json`; its
 connector-specific, discovered at run time). **Interactive-only:** it authenticates solely in a hands-on
 Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended `daily-run`
 cron flow. Read-only. IBKR is **mapped onto a findash account you choose** (see *Account mapping* below)
-and is **trade-fed**: the connector's trade history flows into the `trades` table — the same ledger an
-Israeli broker like Hafenix feeds from screenshots. A positions snapshot is written too, but only as a
+and is **trade-fed**: the connector's trade history flows into the `trades` table — the same ledger a
+screenshot-fed brokerage feeds from screenshots. A positions snapshot is written too, but only as a
 reconciliation cross-check and a bootstrap for a brand-new account whose trades don't yet cover its
 holdings.
 
@@ -62,7 +62,7 @@ trade-derived value.
 ### Account mapping
 
 IBKR rarely deserves its own findash account: a broker you already track may itself be an IBKR wrapper
-(e.g. some Israeli brokers like Hafenix/Phoenix), so a separate IBKR account would double-count net worth.
+(some Israeli brokers are IBKR wrappers underneath), so a separate IBKR account would double-count net worth.
 The [`setup`](../skills/setup/SKILL.md) skill asks once which existing account IBKR attaches to (or to
 create a new one) and records the choice as `[ibkr] account_name=<findash account name>` in
 `.secrets/findash`. `fetch-investments` reads it; if it's unset, it asks in-session and proceeds. No code
@@ -80,16 +80,16 @@ hardcodes an account name or id.
   way the renderer does (USD → cents; GBP → pence/`GBp` already-minor; ILA → agorot). A pence price stored
   as pounds is off by 100×.
 - **Funding an IBKR account is a transfer, not an expense.** Money moving from a bank into IBKR is
-  `category='transfer'` (same rule as Hapoalim → Excellence; principle #2). Never categorize it as spend.
+  `category='transfer'` (same rule as Hapoalim → your brokerage; principle #2). Never categorize it as spend.
 - **Currency / minor units.** Store `amount_minor` in the currency's minor unit. Multiply major amounts by
   100 — **except** values already in a minor unit: `GBp` / `GBX` (pence) and `ILA` (agorot) are integers
   already; do **not** ×100 again. `GBP` (pounds) and `USD` (dollars) do get ×100. Track cash per currency
-  via `component` (`cash_usd` / `cash_gbp` / `cash_ils` / …), reusing the Hafenix convention.
+  via `component` (`cash_usd` / `cash_gbp` / `cash_ils` / …), reusing your brokerage's convention.
 - **Reconciliation, never fabrication.** Cross-check `get_account_summary` net-liquidation against
   Σ(position market values) + Σ(cash). On a material divergence (≳1%), note it (summary + `accounts.notes`).
   **Never** insert a balancing/plug row to force the totals to agree.
 - **Don't duplicate a security you already hold.** If an IBKR symbol matches a security already tracked via
-  Hafenix under a slightly different ticker, reuse the existing `securities` row (match on name/ISIN when
+  your brokerage under a slightly different ticker, reuse the existing `securities` row (match on name/ISIN when
   obvious) rather than creating a near-duplicate.
 
 ### Failure is a skip, not an error

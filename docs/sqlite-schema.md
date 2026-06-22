@@ -13,7 +13,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
   - `NULL` for plain accounts (bank, brokerage, cash).
   - `tagmul_employee | tagmul_employer | pitsuyim` for pension.
   - `tagmul_employee | tagmul_employer` for study fund (no severance).
-  - `cash_usd | cash_gbp | cash_ils | cash_<ccy>` for multi-currency brokerage cash (Hafenix, IBKR).
+  - `cash_usd | cash_gbp | cash_ils | cash_<ccy>` for multi-currency brokerage cash (your brokerage, IBKR).
 - **Live-API sources** (e.g. IBKR via the `fetch-investments` skill) write fact rows with `source_doc_id = NULL` — the deliberate exception to the audit-trail rule. Idempotency then comes from each table's UNIQUE key, not a `documents` row. See [live-sources.md](./live-sources.md).
 - **Trade-fed vs snapshot-fed accounts.** An account with `trades` rows is *trade-fed* (positions derived from the ledger — true cost basis + the stocks-vs-S&P benchmark); an account with only `positions` rows is *snapshot-fed* (valued from the snapshot). The renderer decides this **by data**, never by a hardcoded account id — so the two paths never value the same holding twice.
 
@@ -47,7 +47,7 @@ A Harel pension PDF generally produces:
 Each row in the bank's transactions table becomes one row in `transactions`. Use judgment for `category`:
 
 - `salary` when description says משכורת / payroll
-- `transfer` when both sides are accounts you own (Hapoalim → Excellence is a transfer, *not* an expense)
+- `transfer` when both sides are accounts you own (Hapoalim → the brokerage account is a transfer, *not* an expense)
 - `card_charge` for "כאל" credit card consolidation entries
 - `dividend` for ני"ע-דיבידנד
 - Otherwise pick a sensible category from open vocab — recurring categories will emerge naturally.
@@ -78,7 +78,7 @@ GROUP BY s.ticker HAVING ABS(shares) > 1e-9;
 SELECT date, SUM(amount_minor) OVER (ORDER BY date) / 100.0 AS cumulative_minor
 FROM transactions
 WHERE category = 'transfer'
-  AND counterparty LIKE '%אקסלנס%'
+  AND counterparty LIKE '%<your brokerage>%'  -- match your brokerage's counterparty string
   AND amount_minor < 0  -- outflows from checking = deposits to brokerage
 ORDER BY date;
 ```

@@ -55,10 +55,10 @@ Subtract a few days (3–5) for overlap safety — sync dedups, so re-sending re
 The scraper reads credentials from `.secrets/findash` **itself** — never put them on the command line. That keeps the unattended `claude -p` run allowlist-safe (the command stays a clean `node scripts/fetch_bank.js …` prefix) and your password out of the transcript. Pass the step-2 window as a flag and read the JSON straight from stdout — **no `>` redirection** (the unattended run can't write to arbitrary paths):
 
 ```bash
-node scripts/fetch_bank.js --company=hapoalim --start-date=2026-04-20
+node scripts/fetch_bank.js --company=hapoalim --start-date=YYYY-MM-DD
 ```
 
-`--company=visaCal` for Cal. Omit `--start-date` to default to 60 days back. Read the result from the command's stdout. The script exits:
+`--company=visaCal` for Cal. Substitute the step-2 start date for `YYYY-MM-DD` (the skill auto-computes one — this flag is just the override). Omit `--start-date` to default to 60 days back. Read the result from the command's stdout. The script exits:
 - `0` — success, full library result as JSON on stdout
 - `1` — scrape ran but `success: false`, `errorType` / `errorMessage` on stderr
 - `2` — missing creds / Node too old / Puppeteer launch failure
@@ -71,12 +71,12 @@ This is the whole point of the skill. The script returns raw library output; you
 
 **Bank-account observations (Hapoalim):**
 
-- **Round-trip** — same-magnitude opposite-sign txns within ~14 days, same or related counterparty (e.g. `<amount>` ILS out to Excellence on day 1, `<amount>` ILS back from Excellence on day 4). Sync needs to know so it can classify both legs as `transfer`, not `expense`.
+- **Round-trip** — same-magnitude opposite-sign txns within ~14 days, same or related counterparty (e.g. `<amount>` ILS out to your brokerage on day 1, `<amount>` ILS back from your brokerage on day 4). Sync needs to know so it can classify both legs as `transfer`, not `expense`.
 - **Internal transfer** — counterparty matches an own-account vocabulary string. Pull the vocabulary from the live `accounts` table:
   ```sql
   SELECT DISTINCT institution, name FROM accounts WHERE closed_on IS NULL;
   ```
-  Then fuzzy-match against `description` / `counterparty` strings on each new txn. Hits: `Excellence`, `Hafenix`, `Phoenix`, `אקסלנס`, `הפניקס`, savings/sprint indicators.
+  Then fuzzy-match against `description` / `counterparty` strings on each new txn — match your brokerage's name(s) and any savings/sprint indicators. Israeli brokerages often surface under several names (Hebrew + English), so match each known alias from the vocabulary above rather than a single exact string.
 - **First-time counterparty** — the `description`/`לטובת` string has never been seen on this account before:
   ```sql
   SELECT 1 FROM transactions
@@ -121,8 +121,8 @@ Where:
 
 Tag vocabulary (keep terse so the filename stays under ~180 chars total):
 
-- `roundtrip-<amount-thousands>-<counterparty-slug>` — e.g. `roundtrip-5000-excellence`
-- `internal-<counterparty-slug>` — e.g. `internal-hafenix`
+- `roundtrip-<amount-thousands>-<counterparty-slug>` — e.g. `roundtrip-5000-<brokerage>`
+- `internal-<counterparty-slug>` — e.g. `internal-<brokerage>`
 - `firsttime-<counterparty-slug>`
 - `anomaly-<counterparty-slug>`
 - `installments-<merchant-slug>` — e.g. `installments-amazon`
@@ -195,7 +195,7 @@ If a source failed: `Cal: failed (errorType=GENERIC, errorMessage=…). Re-run: 
 ## Principles
 
 - **Reasoning is yours, parsing is the script's.** The script never categorizes, never decorates, never normalizes. It returns the library's raw output verbatim; everything else (tags, notes, cross-source checks) is your judgment.
-- **Notes are hints, not ground truth.** Sync should verify against the underlying JSON and against cross-source documents (Hafenix periodic statements, etc.) before trusting any bullet.
+- **Notes are hints, not ground truth.** Sync should verify against the underlying JSON and against cross-source documents (your brokerage's periodic statements, etc.) before trusting any bullet.
 - **Idempotency belongs to sync, not here.** It's fine for two runs in the same morning to upload two near-identical files; sync dedups via `documents.drive_id` (which differs per upload) and via `(account_id, date, …)` content keys when it actually ingests the txns.
 - **Atomicity per source.** If Cal fails mid-flow, no Cal files land in `dump/`. Hapoalim's files (if its run succeeded) are unaffected.
 - **Adding a new issuer is mechanical.** New `[section]` in `.secrets/findash`, new mapping row in the table above, new env-var pair to load. No script change unless the new issuer's credential shape doesn't match `{username, password}` or `{userCode, password}`.
