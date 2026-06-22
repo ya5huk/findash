@@ -31,10 +31,10 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
 <table>
   <tr>
     <td width="50%">
-      <img alt="Net worth chart" src="docs/images/net-worth-line.jpg">
+      <img alt="Net worth chart" src="docs/images/net-worth-line.png">
     </td>
     <td width="50%">
-      <img alt="Stocks versus S&P 500 versus deposits" src="docs/images/stocks-vs-spy.jpg">
+      <img alt="Stocks versus S&P 500 versus deposits" src="docs/images/stocks-vs-spy.png">
     </td>
   </tr>
   <tr>
@@ -46,10 +46,10 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
 <table>
   <tr>
     <td width="50%">
-      <img alt="Expense category breakdown" src="docs/images/expenses-breakdown.jpg">
+      <img alt="Expense category breakdown" src="docs/images/expenses-breakdown.png">
     </td>
     <td width="50%">
-      <img alt="Daily spend chart" src="docs/images/daily-spend.jpg">
+      <img alt="Daily spend chart" src="docs/images/daily-spend.png">
     </td>
   </tr>
   <tr>
@@ -61,10 +61,10 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
 <table>
   <tr>
     <td width="50%">
-      <img alt="Monthly totals chart" src="docs/images/monthly-totals.jpg">
+      <img alt="Monthly totals chart" src="docs/images/monthly-totals.png">
     </td>
     <td width="50%">
-      <img alt="Monthly cash flow table" src="docs/images/monthly-cash-flow.jpg">
+      <img alt="Monthly cash flow table" src="docs/images/monthly-cash-flow.png">
     </td>
   </tr>
   <tr>
@@ -76,10 +76,10 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
 <table>
   <tr>
     <td width="50%">
-      <img alt="Dashboard section list" src="docs/images/dashboard-sections.jpg">
+      <img alt="Dashboard section list" src="docs/images/dashboard-sections.png">
     </td>
     <td width="50%">
-      <img alt="Brokerage deposits chart" src="docs/images/brokerage-deposits.jpg">
+      <img alt="Brokerage deposits chart" src="docs/images/brokerage-deposits.png">
     </td>
   </tr>
   <tr>
