@@ -109,4 +109,3 @@ Example on a partially-set-up macOS box:
 - **Idempotent.** Second run on a healthy machine = one line. Only list under ✅ Fixed what you actually changed this run.
 - **Trust reality over CLAUDE.md.** If setup notes say "npm install" but `scripts/package.json` is missing, flag the missing manifest.
 - **No new categories silently.** Surprise findings go under a `🔍 Note` line, not into the matrix.
-- **Legacy per-file secrets are no longer read.** If any `.secrets/{drive,hapoalim,cal,telegram,pdf-passwords}` files exist, add a `🔍 Note`: their values must be moved into the matching `[section]` of `.secrets/findash` (format in `/findash:setup` and `docs/setup.md`) or that integration silently won't work, then the old files deleted. Don't move the user's secrets yourself.

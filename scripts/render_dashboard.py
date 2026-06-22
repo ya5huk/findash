@@ -42,7 +42,7 @@ MAX_STORED_PRICE_AGE_DAYS = 7
 
 # Categories that are NOT expenses (transfers, income, refunds, internal movements).
 # Negative-amount rows with `category` outside this set count as expenses.
-# Canonical source: docs/doc-types.md "Expense vs transfer classification".
+# Canonical source: docs/doc-types/classification.md "Expense vs transfer classification".
 EXPENSE_EXCLUDED_CATEGORIES = frozenset({
     "transfer", "card_payment", "savings_deposit", "savings_withdrawal",
     "securities_buy", "check", "withdrawal", "fx", "refund", "interest",
@@ -62,7 +62,7 @@ OTHER_INCOME_CATEGORIES = frozenset({
 
 # Israeli capital-gains tax applied to *unrealized* stock gains in the dashboard's
 # "stocks income" figure. Realized rows arrive from sync already net of this tax
-# plus the brokerage fee (see docs/doc-types.md "Brokerage sell screenshots").
+# plus the brokerage fee (see docs/doc-types/investments.md "Brokerage sell screenshots").
 ISRAELI_CAPGAINS_TAX = 0.25
 
 # Reporting/base currency. findash reports net worth in ILS by convention
@@ -284,8 +284,8 @@ def main() -> int:
         return row["rate"]
 
     # Live FX for every non-base currency the data actually uses, keyed by
-    # currency (was a hardcoded USD/GBP fetch). ILA is TASE agorot — minor units
-    # of ILS, not a separate FX currency. fx_usd_ils / fx_gbp_ils stay as aliases
+    # currency. ILA is TASE agorot — minor units of ILS, not a separate FX
+    # currency. fx_usd_ils / fx_gbp_ils stay as aliases
     # for the USD/GBP-framed P/L sections further down.
     foreign_ccys = order_currencies(
         r["currency"] for r in cur.execute(
@@ -573,7 +573,7 @@ def main() -> int:
         and back-derives. Adjusts the anchor by the net of transactions on the
         brokerage in that currency minus the cash-leg of buy trades on the
         brokerage in that currency. Sells already write their proceeds into
-        `transactions` per `docs/doc-types.md` ("Brokerage sell screenshots"), so
+        `transactions` per `docs/doc-types/investments.md` ("Brokerage sell screenshots"), so
         they are NOT derived from `trades` here.
         """
         if primary_brokerage_id is None:
@@ -650,7 +650,7 @@ def main() -> int:
         closed_on = account.get("closed_on")
         return (not opened_on or opened_on <= as_of_str) and (not closed_on or as_of_str < closed_on)
 
-    # Data-driven brokerage valuation routing (replaces the old hardcoded account 7).
+    # Data-driven brokerage valuation routing.
     # An account is TRADE-FED when it has any `trades` rows — positions are derived
     # from the event ledger, giving true cost basis + the stocks-vs-S&P benchmark.
     # A brokerage with only `positions` rows and no trades is SNAPSHOT-FED — holdings
@@ -662,11 +662,11 @@ def main() -> int:
     trade_fed_brokerage_ids = [aid for aid, a in accounts.items()
                                if a["kind"] == "brokerage" and aid in trade_fed_ids]
     # The trade-fed brokerage whose per-account cash / deposits / label the sections
-    # below use (was the literal account 7). None when there's no trade history yet.
+    # below use. None when there's no trade history yet.
     primary_brokerage_id = trade_fed_brokerage_ids[0] if trade_fed_brokerage_ids else None
 
-    # Currencies the trade-fed brokerage holds cash in OR has activity in — derives
-    # the old hardcoded ("USD","GBP","ILS") set from data. Activity currencies are
+    # Currencies the trade-fed brokerage holds cash in OR has activity in — derived
+    # from data rather than a fixed currency set. Activity currencies are
     # unioned in (not just snapshot components) so the "activity but no snapshot"
     # guard in brokerage_cash_at still fires for a currency lacking a snapshot.
     brokerage_cash_ccys: list[str] = []
@@ -684,30 +684,24 @@ def main() -> int:
 
     # Snapshot-fed brokerages (e.g. IBKR mapped onto its own account): brokerage
     # accounts with a positions snapshot and NO trades. Disjoint from the trade-fed
-    # set, so they never double-count. Additive + inert when empty. Guard on the
-    # `positions` table existing so a DB that predates it renders unchanged.
-    positions_table_exists = bool(cur.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"
-    ).fetchone())
-    snapshot_fed_ids = []
-    if positions_table_exists:
-        snapshot_fed_ids = [
-            a["id"] for a in accounts.values()
-            if a["kind"] == "brokerage" and a["id"] not in trade_fed_ids
-            and account_active_on(a, as_of)
-            and cur.execute(
-                "SELECT 1 FROM positions WHERE account_id=? LIMIT 1", (a["id"],)
-            ).fetchone()
-        ]
+    # set, so they never double-count. Additive + inert when empty.
+    snapshot_fed_ids = [
+        a["id"] for a in accounts.values()
+        if a["kind"] == "brokerage" and a["id"] not in trade_fed_ids
+        and account_active_on(a, as_of)
+        and cur.execute(
+            "SELECT 1 FROM positions WHERE account_id=? LIMIT 1", (a["id"],)
+        ).fetchone()
+    ]
 
     # Checking-account continuity. When a checking line is migrated to a new
     # account at the same bank, the old (now-closed) account and its active
     # successor can both carry overlapping balance snapshots; net worth should use
     # the freshest valid balance from the group, not both. Derive the groups from
-    # account data (was the hardcoded ((1, 2),) for one user's migration): per
-    # (institution, kind='checking'), group accounts whenever at least one is
-    # closed, ordering active/most-recent first so it wins on as_of ties. Inert
-    # for users with no migration (no closed checking account → no group).
+    # account data: per (institution, kind='checking'), group accounts whenever at
+    # least one is closed, ordering active/most-recent first so it wins on as_of
+    # ties. Inert for users with no migration (no closed checking account → no
+    # group).
     checking_by_institution: dict[str, list[dict]] = {}
     for a in accounts.values():
         if a["kind"] == "checking":
@@ -949,7 +943,7 @@ def main() -> int:
     # Balance-snapshot-fed brokerages (e.g. a bank capital-market account): a
     # brokerage with a plain (component=NULL) balance snapshot but no trades and
     # no positions. Disjoint from the trade-fed and positions-snapshot-fed sets,
-    # so no holding is valued twice. Was the hardcoded "account 8" special case.
+    # so no holding is valued twice.
     balance_snapshot_fed_ids = [
         a["id"] for a in accounts.values()
         if a["kind"] == "brokerage"

@@ -4,7 +4,7 @@ Most findash data is **document-centric**: a file lands in the Drive vault, `syn
 it, and every row cites a `documents.source_doc_id` (first-principle #6). This file owns the exception —
 **live API sources** that write SQLite directly, with no Drive file and no `documents` row.
 
-Document sources are catalogued in [`doc-types.md`](./doc-types.md); this file is their live-API
+Document sources are catalogued in [`doc-types/`](./doc-types/README.md); this file is their live-API
 counterpart. Schema lives in [`sqlite-schema.md`](./sqlite-schema.md).
 
 ## The `source_doc_id = NULL` convention

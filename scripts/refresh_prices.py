@@ -205,8 +205,8 @@ def main() -> None:
     print()
     print(f"FX rates, mode={args.range}:")
     fx_failed: list[str] = []
-    # Refresh FX for every non-base currency actually present in the data (was a
-    # hardcoded USD/GBP pair). ILA is TASE agorot — minor units of ILS, not FX.
+    # Refresh FX for every non-base currency actually present in the data.
+    # ILA is TASE agorot — minor units of ILS, not FX.
     fx_currencies = [
         r[0] for r in cur.execute(
             """SELECT DISTINCT currency FROM (

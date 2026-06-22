@@ -24,7 +24,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 | `documents` | source file ingested | natural key: `drive_id`. every fact links back via `source_doc_id` — except live-API sources (see [live-sources.md](./live-sources.md)) |
 | `accounts` | account / fund / card | `kind` is open vocab; new types don't need a new table |
 | `balances` | (account, as_of, component) snapshot | pension has 3 rows per snapshot |
-| `transactions` | money flow | use judgment for `category` and `counterparty` — see [doc-types.md](./doc-types.md) |
+| `transactions` | money flow | use judgment for `category` and `counterparty` — see [doc-types/classification.md](./doc-types/classification.md) |
 | `securities` | tradable ticker | includes benchmarks (e.g. `SPY`) |
 | `trades` | buy/sell event | positions are derived, never stored. `external_id` = live-source trade id (e.g. IBKR), `NULL` for document/screenshot trades; partial unique index `(account_id, external_id)` dedups connector re-runs. Connector trades carry `source_doc_id` NULL |
 | `positions` | (account, security, as_of) snapshot | as-reported holdings from a live API (e.g. IBKR); the snapshot counterpart to `trades`. For a trade-fed account it's a reconcile/bootstrap cross-check; it's the primary value source only for a snapshot-fed account (one with no `trades`). `source_doc_id` is NULL — see [live-sources.md](./live-sources.md) |

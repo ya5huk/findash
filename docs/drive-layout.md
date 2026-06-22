@@ -36,7 +36,7 @@ Drop any new finance document (payslip, statement, screenshot, anything) into `d
 If the sync encounters a file in `dump/` whose content doesn't fit any existing doc type, it creates a new doc type:
 
 1. Proposes a snake_case name (e.g. `insurance_statement`, `tax_certificate`), a destination folder under the vault, and a filename pattern.
-2. Documents the new type in [`docs/doc-types.md`](./doc-types.md).
+2. Documents the new type in [`docs/doc-types/`](./doc-types/README.md) (a routing-table row + a prose section on the matching catalogue page).
 3. Moves the file. Mentions the new type in the sync report so you can rename or correct it.
 4. **Re-checks already-classified files** against the updated catalogue and moves any that fit the new folder better (keeps the vault organized as the doc-type taxonomy grows).
 

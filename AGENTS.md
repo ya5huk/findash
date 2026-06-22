@@ -46,7 +46,7 @@ These shape every decision in this project. Re-read them when you're about to wr
 ├── docs/
 │   ├── sqlite-schema.md      ← schema conventions + example queries
 │   ├── drive-layout.md       ← Drive folder structure (ID lives in .secrets/findash [drive])
-│   ├── doc-types.md          ← what each kind of document contains + judgment calls
+│   ├── doc-types/            ← per-folder doc-type catalogue + judgment calls (README = index)
 │   ├── design-system.md      ← the booky aesthetic
 │   └── inspiration/          ← reference images
 ├── templates/

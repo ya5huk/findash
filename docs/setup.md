@@ -156,10 +156,6 @@ chmod 600 .secrets/findash
 
 `rclone.conf` is **not** part of this file — it stays a separate file because it is rclone's own OAuth config, passed via `--config ./rclone.conf` (see [section 3](#3-connect-google-drive-with-rclone)).
 
-### Migrating from legacy per-file secrets
-
-Earlier versions used one file per integration (`.secrets/drive`, `.secrets/hapoalim`, `.secrets/cal`, `.secrets/telegram`, `.secrets/pdf-passwords`). These are **no longer read** — move each value into the matching `[section]` of `.secrets/findash` (see the block above) and delete the old files.
-
 ## 6. Initialize the database
 
 The doctor skill can create the database for you. Manually:

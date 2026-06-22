@@ -17,7 +17,7 @@ You pull fresh data from the user's customer-facing bank + credit-card sites and
 - rclone config: `./rclone.conf` (always pass `--config ./rclone.conf`)
 - Drive root folder ID: the `[drive]` section of `.secrets/findash` (`root_folder_id=…`, chmod 600). Folder layout: [`docs/drive-layout.md`](../../docs/drive-layout.md) (root is the `dump/` parent).
 - SQLite (read-only here, for date-range + own-account vocabulary): `data/finance.db`
-- Doc-type shapes sync will see: [`docs/doc-types.md`](../../docs/doc-types.md) (`bank_api_dump`, `bank_api_notes`, `cal_api_dump`, `cal_api_notes`)
+- Doc-type shapes sync will see: [`docs/doc-types/full-statements.md`](../../docs/doc-types/full-statements.md) (`bank_api_dump`, `bank_api_notes`, `cal_api_dump`, `cal_api_notes`)
 
 ## Sources
 

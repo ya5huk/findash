@@ -265,7 +265,7 @@ You don't have to clone to use FinDash. From any Claude Code session:
 
 - [Setup](docs/setup.md) — Claude, rclone, Drive vault, Telegram, bank fetch, daily runs.
 - [Drive layout](docs/drive-layout.md) — vault folders and filename conventions.
-- [Document types](docs/doc-types.md) — what each source document contains and how Claude should interpret it.
+- [Document types](docs/doc-types/README.md) — what each source document contains and how Claude should interpret it.
 - [SQLite schema](docs/sqlite-schema.md) — tables, money conventions, and audit rules.
 - [Design system](docs/design-system.md) — dashboard visual rules.
 
