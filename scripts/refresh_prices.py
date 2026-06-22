@@ -205,7 +205,20 @@ def main() -> None:
     print()
     print(f"FX rates, mode={args.range}:")
     fx_failed: list[str] = []
-    fx_pairs = [("USD", "ILS"), ("GBP", "ILS")]
+    # Refresh FX for every non-base currency actually present in the data (was a
+    # hardcoded USD/GBP pair). ILA is TASE agorot — minor units of ILS, not FX.
+    fx_currencies = [
+        r[0] for r in cur.execute(
+            """SELECT DISTINCT currency FROM (
+                   SELECT currency FROM securities
+                   UNION SELECT currency FROM trades
+                   UNION SELECT currency FROM balances
+                   UNION SELECT currency FROM transactions
+               ) WHERE currency IS NOT NULL AND currency NOT IN ('ILS', 'ILA')
+               ORDER BY currency"""
+        ).fetchall()
+    ]
+    fx_pairs = [(ccy, "ILS") for ccy in fx_currencies]
     for base, quote in fx_pairs:
         time.sleep(REQUEST_DELAY_S)
         n, ok = refresh_fx(cur, base, quote, args.range)

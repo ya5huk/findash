@@ -65,6 +65,29 @@ OTHER_INCOME_CATEGORIES = frozenset({
 # plus the brokerage fee (see docs/doc-types.md "Brokerage sell screenshots").
 ISRAELI_CAPGAINS_TAX = 0.25
 
+# Reporting/base currency. findash reports net worth in ILS by convention
+# (docs/sqlite-schema.md); foreign holdings are converted to it.
+BASE_CCY = "ILS"
+
+# Conventional display order for currency columns/labels — presentation only,
+# NOT user-specific logic. Known majors first in this order, any other currency
+# next (alphabetical), the base currency last.
+_CCY_DISPLAY_ORDER = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD")
+
+
+def order_currencies(ccys) -> list[str]:
+    """De-dupe and order an iterable of currency codes for stable display."""
+    uniq = {c for c in ccys if c}
+
+    def _key(c: str):
+        if c == BASE_CCY:
+            return (2, "")
+        if c in _CCY_DISPLAY_ORDER:
+            return (0, f"{_CCY_DISPLAY_ORDER.index(c):02d}")
+        return (1, c)
+
+    return sorted(uniq, key=_key)
+
 
 # ---------- formatters ----------
 
@@ -244,12 +267,6 @@ def main() -> int:
     """).fetchall()
     held = [dict(r) for r in held]
 
-    # Fetch FX first so we can convert.
-    fx_quote_usd = fetch_yahoo_quote("USDILS=X")
-    fx_quote_gbp = fetch_yahoo_quote("GBPILS=X")
-    fx_usd_ils = fx_quote_usd["price"] if fx_quote_usd else None
-    fx_gbp_ils = fx_quote_gbp["price"] if fx_quote_gbp else None
-
     # Fall back to most recent DB rate if Yahoo is unreachable. If both fail,
     # abort — silently using a magic number would corrupt the headline.
     def _fallback_fx(base: str, quote: str) -> float:
@@ -266,10 +283,25 @@ def main() -> int:
             )
         return row["rate"]
 
-    if fx_usd_ils is None:
-        fx_usd_ils = _fallback_fx("USD", "ILS")
-    if fx_gbp_ils is None:
-        fx_gbp_ils = _fallback_fx("GBP", "ILS")
+    # Live FX for every non-base currency the data actually uses, keyed by
+    # currency (was a hardcoded USD/GBP fetch). ILA is TASE agorot — minor units
+    # of ILS, not a separate FX currency. fx_usd_ils / fx_gbp_ils stay as aliases
+    # for the USD/GBP-framed P/L sections further down.
+    foreign_ccys = order_currencies(
+        r["currency"] for r in cur.execute(
+            """SELECT currency FROM securities
+               UNION SELECT currency FROM trades
+               UNION SELECT currency FROM balances
+               UNION SELECT currency FROM transactions"""
+        ).fetchall()
+        if r["currency"] and r["currency"] not in (BASE_CCY, "ILA")
+    )
+    fx_to_ils: dict[str, float] = {BASE_CCY: 1.0}
+    for ccy in foreign_ccys:
+        q = fetch_yahoo_quote(f"{ccy}{BASE_CCY}=X")
+        fx_to_ils[ccy] = q["price"] if q else _fallback_fx(ccy, BASE_CCY)
+    fx_usd_ils = fx_to_ils.get("USD")
+    fx_gbp_ils = fx_to_ils.get("GBP")
 
     failed_tickers: list[str] = []
     stored_price_fallbacks: list[dict] = []
@@ -306,14 +338,11 @@ def main() -> int:
             "INSERT OR REPLACE INTO prices (security_id, date, close_minor, currency) VALUES (?,?,?,?)",
             (sid, as_of, close_minor, ccy),
         )
-    cur.execute(
-        "INSERT OR REPLACE INTO fx_rates (date, base_currency, quote_currency, rate) VALUES (?,?,?,?)",
-        (as_of, "USD", "ILS", fx_usd_ils),
-    )
-    cur.execute(
-        "INSERT OR REPLACE INTO fx_rates (date, base_currency, quote_currency, rate) VALUES (?,?,?,?)",
-        (as_of, "GBP", "ILS", fx_gbp_ils),
-    )
+    for ccy in foreign_ccys:
+        cur.execute(
+            "INSERT OR REPLACE INTO fx_rates (date, base_currency, quote_currency, rate) VALUES (?,?,?,?)",
+            (as_of, ccy, BASE_CCY, fx_to_ils[ccy]),
+        )
     con.commit()
 
     # ----- 1b. Historical prices + FX (for the over-time charts) -----
@@ -358,14 +387,14 @@ def main() -> int:
                 (sid, d, close_minor, ccy),
             )
 
-    for base in ("USD", "GBP"):
-        hist = fetch_yahoo_history(f"{base}ILS=X")
+    for base in foreign_ccys:
+        hist = fetch_yahoo_history(f"{base}{BASE_CCY}=X")
         if not hist:
             continue
         for d, rate in hist:
             cur.execute(
                 "INSERT OR IGNORE INTO fx_rates (date, base_currency, quote_currency, rate) VALUES (?,?,?,?)",
-                (d, base, "ILS", rate),
+                (d, base, BASE_CCY, rate),
             )
     con.commit()
 
@@ -550,7 +579,7 @@ def main() -> int:
         if primary_brokerage_id is None:
             return {}
         out: dict[str, dict] = {}
-        for ccy in ("USD", "GBP", "ILS"):
+        for ccy in brokerage_cash_ccys:
             component = f"cash_{ccy.lower()}"
             snap = cur.execute(
                 """SELECT amount_minor, as_of FROM balances
@@ -636,6 +665,23 @@ def main() -> int:
     # below use (was the literal account 7). None when there's no trade history yet.
     primary_brokerage_id = trade_fed_brokerage_ids[0] if trade_fed_brokerage_ids else None
 
+    # Currencies the trade-fed brokerage holds cash in OR has activity in — derives
+    # the old hardcoded ("USD","GBP","ILS") set from data. Activity currencies are
+    # unioned in (not just snapshot components) so the "activity but no snapshot"
+    # guard in brokerage_cash_at still fires for a currency lacking a snapshot.
+    brokerage_cash_ccys: list[str] = []
+    if primary_brokerage_id is not None:
+        brokerage_cash_ccys = order_currencies(
+            r["currency"] for r in cur.execute(
+                """SELECT currency FROM balances
+                       WHERE account_id=? AND component LIKE 'cash_%'
+                   UNION SELECT currency FROM transactions WHERE account_id=?
+                   UNION SELECT currency FROM trades WHERE account_id=?""",
+                (primary_brokerage_id, primary_brokerage_id, primary_brokerage_id),
+            ).fetchall()
+            if r["currency"]
+        )
+
     # Snapshot-fed brokerages (e.g. IBKR mapped onto its own account): brokerage
     # accounts with a positions snapshot and NO trades. Disjoint from the trade-fed
     # set, so they never double-count. Additive + inert when empty. Guard on the
@@ -654,10 +700,28 @@ def main() -> int:
             ).fetchone()
         ]
 
-    # Hapoalim checking moved from account 2 to account 1. Historical manual cash
-    # snapshots and official bank snapshots can overlap, so net worth should use
-    # the freshest valid balance from the continuity pair, not both.
-    checking_continuity_groups = ((1, 2),)
+    # Checking-account continuity. When a checking line is migrated to a new
+    # account at the same bank, the old (now-closed) account and its active
+    # successor can both carry overlapping balance snapshots; net worth should use
+    # the freshest valid balance from the group, not both. Derive the groups from
+    # account data (was the hardcoded ((1, 2),) for one user's migration): per
+    # (institution, kind='checking'), group accounts whenever at least one is
+    # closed, ordering active/most-recent first so it wins on as_of ties. Inert
+    # for users with no migration (no closed checking account → no group).
+    checking_by_institution: dict[str, list[dict]] = {}
+    for a in accounts.values():
+        if a["kind"] == "checking":
+            checking_by_institution.setdefault(a["institution"], []).append(a)
+    checking_continuity_groups = tuple(
+        tuple(
+            a["id"] for a in sorted(
+                group,
+                key=lambda a: (a.get("closed_on") is not None, a.get("closed_on") or ""),
+            )
+        )
+        for group in checking_by_institution.values()
+        if len(group) > 1 and any(a.get("closed_on") for a in group)
+    )
     checking_continuity_ids = {account_id for group in checking_continuity_groups for account_id in group}
 
     def net_worth_balances_at(as_of_str: str) -> list[dict]:
@@ -810,7 +874,7 @@ def main() -> int:
     brokerage_cash_parts: list[str] = []
     brokerage_cash_ils_sum = 0.0
     brokerage_cash_snap_dates: list[str] = []
-    for ccy in ("USD", "GBP", "ILS"):
+    for ccy in brokerage_cash_ccys:
         info = brokerage_cash_now.get(ccy, {})
         amt = info.get("amount", 0.0)
         if abs(amt) < 0.01:
@@ -882,17 +946,28 @@ def main() -> int:
     inv_rows = []
     inv_total_ils = 0.0
 
-    # Hapoalim Capital Market (account 8) — balance snapshot
-    acc8 = accounts.get(8)
-    b8 = latest_by_key.get((8, None))
-    if acc8 and b8 and not acc8.get("closed_on"):
-        amount = b8["amount_minor"] / 100.0
+    # Balance-snapshot-fed brokerages (e.g. a bank capital-market account): a
+    # brokerage with a plain (component=NULL) balance snapshot but no trades and
+    # no positions. Disjoint from the trade-fed and positions-snapshot-fed sets,
+    # so no holding is valued twice. Was the hardcoded "account 8" special case.
+    balance_snapshot_fed_ids = [
+        a["id"] for a in accounts.values()
+        if a["kind"] == "brokerage"
+        and a["id"] not in trade_fed_ids
+        and a["id"] not in snapshot_fed_ids
+        and account_active_on(a, as_of)
+        and latest_by_key.get((a["id"], None))
+    ]
+    for aid in balance_snapshot_fed_ids:
+        acc_bs = accounts[aid]
+        b_bs = latest_by_key.get((aid, None))
+        amount = b_bs["amount_minor"] / 100.0
         inv_total_ils += amount
         inv_rows.append(
-            f"<tr>{heb_td(acc8['name'])}"
-            f'<td class="muted">{h(acc8["institution"])}</td>'
-            f"{money_td(amount, b8['currency'])}"
-            f'<td class="muted num">{h(b8["as_of"])}</td></tr>'
+            f"<tr>{heb_td(acc_bs['name'])}"
+            f'<td class="muted">{h(acc_bs["institution"])}</td>'
+            f"{money_td(amount, b_bs['currency'])}"
+            f'<td class="muted num">{h(b_bs["as_of"])}</td></tr>'
         )
 
     # Trade-fed brokerage (primary_brokerage_id) — live market value
@@ -1013,9 +1088,13 @@ def main() -> int:
         overview_rows,
     )
 
+    fx_clause = (
+        "FX (" + ", ".join(f"{c}→ILS: {fx_to_ils[c]:.4f}" for c in foreign_ccys) + ") "
+        if foreign_ccys else ""
+    )
     overview_footnote_parts = [
         f"Net worth uses live market values for tradable positions. "
-        f"FX (USD→ILS: {fx_usd_ils:.4f}, GBP→ILS: {fx_gbp_ils:.4f}) and prices fetched from Yahoo Finance "
+        f"{fx_clause}and prices fetched from Yahoo Finance "
         f"at render time. Closed accounts are excluded from Cash; "
         f"see SQLite-data → accounts for the full ledger.",
     ]
@@ -2449,12 +2528,14 @@ def main() -> int:
     chart_adapter_js = (VENDOR_DIR / "chartjs-adapter-date-fns.bundle.min.js").read_text(encoding="utf-8")
     fonts_inline_css = (VENDOR_DIR / "fonts-inline.css").read_text(encoding="utf-8")
 
-    # Drift banner — compare snapshot-pair deltas against captured flows.
-    # Same logic as scripts/reconcile_hafenix.py; only the most recent pair per
-    # currency surfaces, and only if drift exceeds the threshold.
-    drift_thresholds = {"USD": 50.0, "GBP": 50.0, "ILS": 200.0}
+    # Drift banner — compare snapshot-pair deltas against captured flows for the
+    # trade-fed brokerage: only the most recent pair per currency surfaces, and
+    # only if drift exceeds the threshold (likely a missing FX/deposit/sell doc).
+    # Thresholds default per currency (base looser than foreign); currencies are
+    # the ones the brokerage actually holds.
+    drift_thresholds = {ccy: (200.0 if ccy == BASE_CCY else 50.0) for ccy in brokerage_cash_ccys}
     drift_msgs: list[str] = []
-    for ccy in ("USD", "GBP", "ILS"):
+    for ccy in brokerage_cash_ccys:
         component = f"cash_{ccy.lower()}"
         snaps = cur.execute(
             """SELECT as_of, amount_minor/100.0 AS amount FROM balances
@@ -2534,10 +2615,11 @@ def main() -> int:
     print(f"WROTE: {OUTPUT_PATH} ({size:,} bytes)")
     print(f"AS_OF: {as_of}")
     print(f"NET_WORTH: {net_worth_str}")
+    fx_summary = ", ".join(f"{c}/ILS={fx_to_ils[c]:.4f}" for c in foreign_ccys)
     print(
         f"PRICED: {n_priced} positions "
         f"({n_live_priced} live, {len(stored_price_fallbacks)} stored), "
-        f"2 FX rates (USD/ILS={fx_usd_ils:.4f}, GBP/ILS={fx_gbp_ils:.4f})"
+        f"{len(foreign_ccys)} FX rates ({fx_summary})"
     )
     print(f"BROKERAGE: market_value={brokerage_market_value_ils:,.0f} ILS, "
           f"cost_basis={brokerage_cost_basis_ils:,.0f} ILS, "
