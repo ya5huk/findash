@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  findash unattended daily run — macOS user LaunchAgent (TEMPLATE).
+
+  Why a LaunchAgent and not cron: jobs spawned by the `cron` daemon run outside
+  your GUI login session, so they cannot read the Claude Code OAuth token from
+  the login Keychain — `claude -p` then fails with "Not logged in · Please run
+  /login". A user LaunchAgent runs inside your logged-in (Aqua) session and can
+  reach the Keychain. Bonus: it runs on next wake if the Mac was asleep at the
+  scheduled time (cron just skips a missed run).
+
+  Placeholders keep this public repo free of personal paths. Install — from the
+  repo root, with `claude` on your PATH:
+
+    sed -e "s|__REPO_ROOT__|$(pwd)|g" \
+        -e "s|__CLAUDE_BIN__|$(command -v claude)|g" \
+        -e "s|__CLAUDE_DIR__|$(dirname "$(command -v claude)")|g" \
+        -e "s|__HOME__|$HOME|g" \
+        scripts/com.findash.daily.plist \
+      > "$HOME/Library/LaunchAgents/com.findash.daily.plist"
+    launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.findash.daily.plist"
+
+  Manage (uid = $(id -u)):
+    launchctl print     gui/$(id -u)/com.findash.daily   # status + schedule
+    launchctl kickstart gui/$(id -u)/com.findash.daily   # run now (full flow!)
+    launchctl bootout   gui/$(id -u)/com.findash.daily   # unload
+    tail -f "$HOME/Library/Logs/findash/daily.log"       # watch output
+
+  Runs daily at 10:00 local. Change Hour/Minute below to reschedule, then
+  re-render (sed) and re-load (bootout + bootstrap).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.findash.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO_ROOT__/scripts/run_daily.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_BIN</key>
+        <string>__CLAUDE_BIN__</string>
+        <key>PATH</key>
+        <string>__CLAUDE_DIR__:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>10</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/findash/daily.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/findash/daily.log</string>
+</dict>
+</plist>

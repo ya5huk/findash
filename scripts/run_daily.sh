@@ -1,8 +1,15 @@
 #!/bin/bash
-# Wrapper for the launchd/cron daily job. Loads the findash plugin and runs its
-# `daily-run` skill via `claude -p`; on a failed attempt, waits 60s and retries
-# exactly once. Reason: morning runs sometimes hit a transient Anthropic API
-# socket close right after lid-open, before networking has settled.
+# Wrapper for the unattended daily run. On macOS this is invoked by the
+# `com.findash.daily` user LaunchAgent at 10:00 local (template + install steps:
+# scripts/com.findash.daily.plist). It's a LaunchAgent rather than cron because
+# only a job inside your GUI login session can read the Claude OAuth token from
+# the login Keychain — cron runs outside it and `claude -p` fails with "Not
+# logged in".
+#
+# Loads the findash plugin and runs its `daily-run` skill via `claude -p`; on a
+# failed attempt, waits 60s and retries exactly once. Reason: morning runs
+# sometimes hit a transient Anthropic API socket close right after lid-open,
+# before networking has settled.
 set -uo pipefail
 
 # Run from the repo root regardless of where the job was launched, so the skills'

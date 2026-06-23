@@ -1,8 +1,8 @@
 # findash
 
-Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault → SQLite → HTML dashboard. Skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `fetch-investments` pulls live Interactive Brokers **trades** straight into SQLite, mapped onto an account you choose (no document — a live API source via the official IBKR connector; interactive-only); `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains the unattended steps (fetch → sync → render) for the morning flow (it's what the cron wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Everything else is data, templates, and documentation.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault → SQLite → HTML dashboard. Skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `fetch-investments` pulls live Interactive Brokers **trades** straight into SQLite, mapped onto an account you choose (no document — a live API source via the official IBKR connector; interactive-only); `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains the unattended steps (fetch → sync → render) for the morning flow (it's what the unattended wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Everything else is data, templates, and documentation.
 
-Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running Claude Code from the repo root with `claude --plugin-dir .` (the cron wrapper passes the same flag).
+Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running Claude Code from the repo root with `claude --plugin-dir .` (the unattended wrapper passes the same flag).
 
 ## First principles
 
@@ -70,6 +70,7 @@ These shape every decision in this project. Re-read them when you're about to wr
     ├── bundle-assets.py      ← one-shot vendor script for templates/vendor/
     ├── fetch_bank.js         ← Puppeteer wrapper around israeli-bank-scrapers (Hapoalim + Cal)
     ├── run_daily.sh          ← unattended wrapper: loads the plugin, runs /findash:daily-run
+    ├── com.findash.daily.plist ← macOS LaunchAgent template for the daily run (header = install/manage)
     ├── lib/                  ← shared secret-file parsers (secrets.mjs, findash_secrets.py)
     ├── package.json          ← npm deps for fetch_bank.js (`cd scripts && npm install`)
     └── node_modules/         ← gitignored
@@ -82,6 +83,7 @@ These shape every decision in this project. Re-read them when you're about to wr
 - **All findash secrets live in one chmod-600 file, `.secrets/findash`** — an INI with `[drive] [hapoalim] [cal] [telegram] [pdf-passwords]` sections. `rclone.conf` stays separate (rclone's own OAuth config). The Drive vault root folder ID is `root_folder_id=<ID>` under `[drive]`; get the ID from your vault folder's Drive URL (`drive.google.com/drive/folders/<ID>`). Skills read it and pass it to rclone via `--drive-root-folder-id=<ID>`. Folder *structure* is documented in `docs/drive-layout.md`.
 - Payslip passwords go under `[pdf-passwords]` in `.secrets/findash`, one `<filename-pattern>=<password>` per line.
 - **Offline assets for the dashboard:** run `python3 scripts/bundle-assets.py` once to vendor Chart.js, the date adapter, and base64-embedded EB Garamond + Cormorant Garamond fonts into `templates/vendor/` (gitignored). Re-run only if pinned versions change.
+- **Unattended daily run (macOS):** scheduled by the `com.findash.daily` LaunchAgent at 10:00 local — *not* cron, because only a job inside your GUI login session can read the Claude OAuth token from the login Keychain (cron runs outside it and `claude -p` fails with "Not logged in"). Install/manage steps live in the template header at `scripts/com.findash.daily.plist`; the wrapper it runs is `scripts/run_daily.sh`.
 - **Telegram delivery for the dashboard:** the `[telegram]` section of `.secrets/findash` holds the bot credentials:
   ```
   [telegram]
@@ -115,7 +117,7 @@ These shape every decision in this project. Re-read them when you're about to wr
      ```
      Log in if prompted, solve CAPTCHA/2FA if it appears, trust the device if offered, then press Enter in the terminal. Profile is saved to `~/.cache/findash/chromium-profile/visaCal/`.
   7. Either source whose credentials are absent (no `[<company>]` section in `.secrets/findash`) is silently skipped — a one-bank user can still run the skill.
-- **Interactive Brokers (`fetch-investments` skill, optional):** IBKR is **not** a findash-declared MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. It writes **trades** straight to SQLite (no Drive document), mapped onto an account you choose, plus a reconcile/bootstrap positions snapshot. **Interactive-only:** the connector authenticates solely in a hands-on Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended `daily-run` cron flow.
+- **Interactive Brokers (`fetch-investments` skill, optional):** IBKR is **not** a findash-declared MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. It writes **trades** straight to SQLite (no Drive document), mapped onto an account you choose, plus a reconcile/bootstrap positions snapshot. **Interactive-only:** the connector authenticates solely in a hands-on Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended `daily-run` flow.
   1. Add the connector once (needs a browser): in Claude, `+` → **Connectors** → **Add connector** → **Browse connectors**, search **"ibkr"**, pick **Interactive Brokers (IBKR)** (under *Anthropic & Partners*), and log in with your IBKR credentials. Confirm with `/mcp` — it should read `Interactive Brokers (IBKR) · connected`. (Restart Claude Code after adding it so the session picks it up; the connector surfaces only when Claude Code is signed in with your Claude.ai subscription, not an API key.)
   2. `[ibkr]` section in `.secrets/findash`: `account_name=` records which findash account IBKR maps onto (set during `setup` — usually an existing brokerage, since an Israeli broker that's an IBKR wrapper would otherwise double-count). Optional `account_ids=` / `base_currency=` only for multiple IBKR accounts or a non-default base currency.
   3. Run `/findash:fetch-investments` in an interactive session to pull trades (+ a reconcile snapshot), then re-render. It's read-only — deny any tool that places an order or moves funds. If the connector isn't connected, the skill just skips, like a bank source with no credentials.
