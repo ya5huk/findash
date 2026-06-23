@@ -19,6 +19,24 @@
       "Edit(inbox/**)",
       "Write(data/last_sync_summary.md)",
       "Edit(data/last_sync_summary.md)"
+    ],
+    "deny": [
+      "Read(.secrets/**)",
+      "Read(**/.secrets/**)",
+      "Read(rclone.conf)",
+      "Read(**/rclone.conf)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(*.pem)",
+      "Read(**/*.pem)",
+      "Read(*.key)",
+      "Read(**/*.key)",
+      "Read(*.p12)",
+      "Read(**/*.p12)",
+      "Read(*.pfx)",
+      "Read(**/*.pfx)"
     ]
   }
 }
