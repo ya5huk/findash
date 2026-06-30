@@ -12,16 +12,22 @@
 # as Telegram-formatted message(s) if present (deleting it on success).
 #
 # Usage: scripts/send_telegram.sh [--note "<extra caption line>"] [--dry-run]
+#                                 [--alert "<status line>"]
 #   --note     append a line to the caption (e.g. a best-effort fetch warning)
+#   --alert    send a single plain-text status line instead of the dashboard
+#              (used by run_daily.sh to report a failed unattended run)
 #   --dry-run  print what would be sent, send nothing
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 NOTE=""
 DRY=0
+MODE=""
+ALERT_TEXT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --note) NOTE="${2:-}"; shift 2 ;;
+    --alert) MODE="alert"; ALERT_TEXT="${2:-}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     *) echo "send_telegram: unknown arg '$1'" >&2; exit 2 ;;
   esac
@@ -31,12 +37,12 @@ if ! { [ -f .secrets/findash ] && grep -q '^[[:space:]]*\[telegram\]' .secrets/f
   echo "Telegram delivery skipped: not configured — add a [telegram] section to .secrets/findash (see CLAUDE.md)"
   exit 0
 fi
-if [ ! -f output/dashboard.html ]; then
+if [ "$MODE" != "alert" ] && [ ! -f output/dashboard.html ]; then
   echo "send_telegram: output/dashboard.html not found — run the renderer first" >&2
   exit 1
 fi
 
-NOTE="$NOTE" DRY="$DRY" python3 - <<'PY'
+NOTE="$NOTE" DRY="$DRY" MODE="$MODE" ALERT_TEXT="$ALERT_TEXT" python3 - <<'PY'
 import html, json, os, re, sys, urllib.request, urllib.error, uuid
 
 sys.path.insert(0, 'scripts/lib')
@@ -81,6 +87,22 @@ def post(method, fields, files=None):
             return {'ok': False, 'description': f'HTTP {e.code}'}
     except Exception as e:
         return {'ok': False, 'description': str(e)}
+
+
+# --alert mode: send one plain-text status line and stop (used by run_daily.sh
+# to report a failed unattended run). No document, no sync summary.
+if os.environ.get('MODE') == 'alert':
+    alert = os.environ.get('ALERT_TEXT', '').strip() or 'findash daily run failed.'
+    if dry:
+        print(f"[dry-run] sendMessage alert: {alert!r}")
+        sys.exit(0)
+    r = post('sendMessage', {'chat_id': chat, 'text': alert,
+                             'disable_web_page_preview': 'true'})
+    if not r.get('ok'):
+        print("Telegram alert failed:", r.get('description'))
+        sys.exit(1)
+    print("Alert sent to chat", r['result']['chat']['id'])
+    sys.exit(0)
 
 
 SECTION_LABELS = {
