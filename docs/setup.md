@@ -300,14 +300,14 @@ IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive
 
    It should show `Interactive Brokers (IBKR) · connected`. Restart Claude Code after adding the connector so the session picks it up. The connector appears in Claude Code only when you're signed in with your **Claude.ai subscription** (not an `ANTHROPIC_API_KEY`).
 
-2. **Map IBKR to a findash account, in `[ibkr]`.** IBKR attaches to one of your existing findash accounts rather than getting its own — often an existing brokerage, since a broker that's an IBKR wrapper (e.g. some Israeli brokers) would otherwise double-count net worth. `/findash:setup` (or `/findash:fetch-investments` on first run) lists your accounts and helps you pick; paste the chosen name here. `account_ids` / `base_currency` stay optional:
+2. **Account mapping is automatic.** IBKR attaches to one of your existing findash accounts rather than getting its own — often an existing brokerage, since a broker that's an IBKR wrapper (e.g. some Israeli brokers) would otherwise double-count net worth. `/findash:fetch-investments` resolves the account itself on first run (attaching where the ledgers clearly match, creating an account for IBKR-only users, asking only when genuinely ambiguous) and stores the choice in the DB. Nothing to configure here; the `[ibkr]` section is only for the optional keys:
 
    ```ini
    [ibkr]
-   account_name=<existing or new findash account name>
    # Optional — only for multiple IBKR accounts or a non-default base currency:
    # account_ids=<comma-separated IBKR account ids>
    # base_currency=ILS
+   # account_name=<legacy override only — pre-existing installs>
    ```
 
 3. **Pull your trades.** In an interactive session:

@@ -40,7 +40,8 @@ CREATE TABLE accounts (
   closed_on         TEXT,
   investment_track  TEXT,                                  -- e.g. 'S&P 500 עוקב מדד' for pension/study_fund/brokerage
   liquidity_date    TEXT,                                  -- when funds become accessible (training fund, deposits)
-  notes             TEXT
+  notes             TEXT,
+  live_source       TEXT                                   -- 'ibkr' on the one account a live API source feeds (see docs/live-sources.md); NULL otherwise
 );
 CREATE INDEX idx_accounts_kind ON accounts(kind);
 CREATE INDEX idx_accounts_institution ON accounts(institution);

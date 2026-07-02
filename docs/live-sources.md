@@ -17,7 +17,7 @@ What replaces the audit trail:
 
 - **Idempotency comes from UNIQUE dedup keys, not a `documents` row.** Re-running a live fetch upserts the
   same rows (no duplicates) via each table's natural key.
-- **Provenance is implicit in the account.** Rows on an `Interactive Brokers` account (`institution`) are,
+- **Provenance is implicit in the account.** Rows on the `live_source='ibkr'`-marked account are,
   by construction, from the IBKR live source. Keep a one-line note in `accounts.notes` when something is
   worth recording (e.g. a reconciliation discrepancy).
 
@@ -61,12 +61,16 @@ trade-derived value.
 
 ### Account mapping
 
-IBKR rarely deserves its own findash account: a broker you already track may itself be an IBKR wrapper
-(some Israeli brokers are IBKR wrappers underneath), so a separate IBKR account would double-count net worth.
-The [`setup`](../skills/setup/SKILL.md) skill asks once which existing account IBKR attaches to (or to
-create a new one) and records the choice as `[ibkr] account_name=<findash account name>` in
-`.secrets/findash`. `fetch-investments` reads it; if it's unset, it asks in-session and proceeds. No code
-hardcodes an account name or id.
+IBKR rarely deserves its own findash account: a broker you already track may itself be an IBKR
+wrapper (some Israeli brokers are IBKR wrappers underneath), so a separate IBKR account would
+double-count net worth. The mapped account is **resolved automatically** by
+[`fetch-investments`](../skills/fetch-investments/SKILL.md) — DB marker
+(`accounts.live_source='ibkr'`) first, then the legacy `[ibkr] account_name` secrets override
+(backfilled into the marker once), then first-run evidence: attach to a ledger-matching broker,
+auto-create an account for IBKR-only users, ask only when genuinely ambiguous. The decision is
+persisted in the marker so it stays sticky — the `(account_id, external_id)` dedup key breaks if
+the account flips between runs. No code hardcodes an account name or id, and nothing needs to be
+hand-edited.
 
 ### Judgment calls
 

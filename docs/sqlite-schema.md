@@ -22,7 +22,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 | Table | One row per | Notes |
 |---|---|---|
 | `documents` | source file ingested | natural key: `drive_id`. every fact links back via `source_doc_id` — except live-API sources (see [live-sources.md](./live-sources.md)) |
-| `accounts` | account / fund / card | `kind` is open vocab; new types don't need a new table |
+| `accounts` | account / fund / card | `kind` is open vocab; new types don't need a new table. `live_source='ibkr'` marks the one account the IBKR live source feeds — see [live-sources.md](./live-sources.md) |
 | `balances` | (account, as_of, component) snapshot | pension has 3 rows per snapshot |
 | `transactions` | money flow | use judgment for `category` and `counterparty` — see [doc-types/classification.md](./doc-types/classification.md) |
 | `securities` | tradable ticker | includes benchmarks (e.g. `SPY`) |

@@ -9,7 +9,7 @@ You pull a live portfolio from Interactive Brokers (IBKR) via the official IBKR 
 
 **This replaces the old screenshot workflow for new activity.** Historically the user fed trades by dropping screenshots into Drive `dump/`; the connector's trade feed makes that unnecessary going forward. Existing screenshot trades are left untouched — you only ingest connector trades *after* the latest trade already on the mapped account (see [Trades](#3-trades-the-core-judgment-not-mechanics)).
 
-**No separate IBKR account.** Do **not** create a standalone "Interactive Brokers" account — that double-counts net worth (an IBKR brokerage *is* the user's portfolio, and for many users it's already tracked under another broker, e.g. an Israeli wrapper). IBKR data attaches to **one mapped findash account**, chosen by the user in `setup` and recorded as `[ibkr] account_name`.
+**One resolved account.** IBKR data attaches to **one findash account**, resolved automatically (see [§1](#1-preconditions--resolve-the-mapped-account)): an existing broker when the ledgers clearly match — for many users the IBKR portfolio is already tracked under another broker (e.g. an Israeli wrapper), and a second account would double-count net worth — or a newly created brokerage account for IBKR-only users. The choice persists as `accounts.live_source='ibkr'`, so it's made at most once.
 
 **Interactive-only.** The IBKR connector is Anthropic's certified Interactive Brokers connector, added by the user through Claude's connector directory (it's a claude.ai connector, *not* a findash-declared MCP server). It authenticates only in an **interactive** Claude session, so this skill is a **manual** step — it is *not* chained into the unattended `daily-run` / `run_daily.sh` cron flow. Run it by hand (then re-render) when you want fresh holdings.
 
@@ -19,7 +19,7 @@ You pull a live portfolio from Interactive Brokers (IBKR) via the official IBKR 
 
 - IBKR connector: the official **Interactive Brokers (IBKR)** connector, added once by the user via Claude's connector directory (`+` → Connectors → Add connector → Browse connectors → search "ibkr"). It's a **claude.ai connector**, so it is *not* declared in `plugin.json`, and its tool names are connector-specific (not `mcp__plugin_findash_ibkr__*`) — **discover them at run time**, don't hardcode. Confirm it's live with `/mcp` (should read `Interactive Brokers (IBKR) · connected`).
 - Config: the `[ibkr]` section of `.secrets/findash`, read via `scripts/lib/findash_secrets.py` → `read_section('ibkr')`:
-  - **`account_name`** — the findash account IBKR maps onto (set by `setup`). Resolve it to an `accounts.id`. If absent, ask once and tell the user the line to add (see [Resolve the mapped account](#1-preconditions--resolve-the-mapped-account)).
+  - `account_name` — **legacy override only.** The mapped account now lives in the DB (`accounts.live_source='ibkr'`); if this key is set it wins once and is backfilled into the marker (see [Resolve the mapped account](#1-preconditions--resolve-the-mapped-account)). New installs never set it.
   - `account_ids` / `base_currency` — optional (multi-account subset; non-default base ccy, default `ILS`).
 - Local DB: `data/finance.db` (the live working copy; run after a sync so it's current — typically `/findash:sync-finance-data` (or `/findash:daily-run`) first, then this skill, then re-render).
 - SQLite schema + conventions: [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) — the `trades` table (incl. `external_id`), the `positions` table, and the `source_doc_id = NULL` live-source convention.
@@ -55,11 +55,32 @@ then call them. If a name has drifted, re-discover by function from `/mcp`.
 ### 1. Preconditions + resolve the mapped account
 
 - Read the `[ibkr]` config.
-- **Resolve the mapped account** from `[ibkr] account_name`:
-  - **Set, and the account exists** (`SELECT id FROM accounts WHERE name=?`, names are UNIQUE) → use that `id`.
-  - **Set, but no such account yet** (the user chose "create new" in `setup`) → create one brokerage row: `kind='brokerage'`, `name=<account_name>`, `institution` from `get_account_summary` (or `'Interactive Brokers'`), `currency=<base ccy>`.
-  - **Unset** → this is an interactive session, so ask once: show the existing accounts (`SELECT id,name,kind,institution FROM accounts ORDER BY id`), explain that IBKR holdings may already be tracked under another broker (e.g. some Israeli brokers are IBKR wrappers), and let the user pick attach-to-existing vs create-new. Use the choice for this run, and **print the exact line** `account_name=<name>` for them to paste under `[ibkr]` so future runs skip the prompt. (Don't write `.secrets/findash` yourself — same principle as `setup`.)
-  - Everything below writes to this **one** mapped account. Never create a separate IBKR account.
+- **Resolve the mapped account** — in this priority order, and persist the outcome so the choice
+  is sticky (the `(account_id, external_id)` dedup key double-counts the portfolio if the
+  account ever flips between runs):
+  1. **Marker:** `SELECT id FROM accounts WHERE live_source='ibkr'`. One row → use it, no
+     questions. Two rows, or a marked row with `closed_on` set → stop with a clear message
+     (`findash-doctor` flags this too); never guess between them.
+  2. **Legacy override:** `[ibkr] account_name` set → resolve by name (`SELECT id FROM accounts
+     WHERE name=?`), use it, and backfill the marker (`UPDATE accounts SET live_source='ibkr'
+     WHERE id=?`) so the secrets line becomes redundant. Name doesn't resolve → treat as unset
+     and fall through.
+  3. **First-run evidence (judgment, not a script):**
+     - An account already holding trades with `external_id` set was connector-fed before —
+       conclusive. Mark it and continue.
+     - Otherwise compare the connector's trade history and positions against each existing
+       brokerage account's ledger (tickers / quantities / dates). A clear match means that
+       broker *is* the IBKR account underneath (the wrapper case) — attach to it.
+     - No brokerage accounts, or no overlap anywhere → create one brokerage row
+       (`kind='brokerage'`, `name='Interactive Brokers'`, `institution` from
+       `get_account_summary` or `'Interactive Brokers'`, `currency=<base ccy>`). This is the
+       IBKR-only-user path: zero questions.
+     - Genuinely ambiguous (partial overlap, multiple plausible candidates) → ask once,
+       interactively. If no answer arrives, skip the run (`IBKR: skipped (account ambiguous)`)
+       rather than guess — a wrong sticky choice is worse than a missed day.
+     - Whatever the outcome: `UPDATE accounts SET live_source='ibkr' WHERE id=?`.
+  - Everything below writes to this **one** resolved account. Never create a *second* IBKR
+    account.
 - **Idempotent schema guards** (for DBs predating these — `scripts/init-db.sql` is the source of truth):
   - `positions` table: `CREATE TABLE IF NOT EXISTS positions (...)` mirroring the schema's `positions` block.
   - `trades.external_id` + its partial unique index — but a plain `ADD COLUMN` errors if it already exists, so guard with `PRAGMA table_info`:
@@ -67,6 +88,11 @@ then call them. If a name has drifted, re-discover by function from `/mcp`.
     sqlite3 data/finance.db "SELECT 1 FROM pragma_table_info('trades') WHERE name='external_id';" | grep -q 1 \
       || sqlite3 data/finance.db "ALTER TABLE trades ADD COLUMN external_id TEXT;"
     sqlite3 data/finance.db "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_external ON trades(account_id, external_id) WHERE external_id IS NOT NULL;"
+    ```
+  - `accounts.live_source` — same `pragma_table_info` guard pattern:
+    ```bash
+    sqlite3 data/finance.db "SELECT 1 FROM pragma_table_info('accounts') WHERE name='live_source';" | grep -q 1 \
+      || sqlite3 data/finance.db "ALTER TABLE accounts ADD COLUMN live_source TEXT;"
     ```
 - Confirm `data/finance.db` exists. Run standalone with no DB? Tell the user to run sync first — don't fabricate one.
 
@@ -95,6 +121,10 @@ Write a positions snapshot to the **mapped account** from `get_account_positions
 - **`positions`** — one row per holding (`quantity`, `avg_cost_minor`, `market_price_minor`, `market_value_minor`, `currency`, `source_doc_id` NULL). Minor-unit rules as in §3 (watch `GBp`). Upsert on `UNIQUE(account_id, security_id, as_of)`.
 - **`balances`** (cash) — one row per non-zero currency: `component='cash_<ccy>'` (reuse the per-currency convention), `source_doc_id` NULL, upsert on `UNIQUE(account_id, as_of, component)`.
 - **Reconcile:** compare (a) the snapshot's per-symbol quantities against the trade-derived holdings on the mapped account, and (b) `get_account_summary` net-liquidation against Σ(position market values) + Σ(cash), in one currency. Material drift (≳1% — a missed trade, a corporate action, or history beyond the connector window) → **note it** in the summary and one line in `accounts.notes`. **Never** insert a balancing/plug row.
+  Also guard against **double-feeding**: if another account's holdings substantially overlap the
+  IBKR symbols/quantities (the same portfolio arriving twice — e.g. the wrapper broker's
+  statements are also being synced as documents), flag it in the summary and `accounts.notes`.
+  Warn, never silently continue.
 
 ### 5. Prices (optional enrichment)
 
@@ -118,7 +148,9 @@ On the skip path (step 2 failed), **do not push** — nothing changed.
 
 ## Principles
 
-- **Trade-fed, one mapped account.** Ingest the connector trade ledger onto the `[ibkr] account_name` account; never create a separate IBKR account (it double-counts net worth). Positions are reconcile + bootstrap, not the primary valuation.
+- **Trade-fed, one resolved account.** The mapped account is resolved automatically (marker →
+  legacy `account_name` → first-run evidence) and persisted as `accounts.live_source='ibkr'`;
+  never create a second IBKR account (it double-counts net worth). Positions are reconcile + bootstrap, not the primary valuation.
 - **Read-only at IBKR.** Never draft, place, modify, or cancel an order, and never transfer or move funds. Use only the connector's reporting tools; deny any other tool when prompted.
 - **Interactive-only.** The IBKR connector authenticates only in a hands-on Claude session, so this skill is never chained into the unattended `daily-run` / cron flow. Run it manually, then re-render.
 - **No document, by design.** IBKR rows carry `source_doc_id = NULL` — the documented exception to first-principle #6 (see `CLAUDE.md` + `docs/live-sources.md`). Idempotency comes from the UNIQUE dedup keys (`(account_id, external_id)` for trades; the snapshot keys for positions/balances), not a `documents` row.
