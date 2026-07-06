@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(scripts/send_telegram.sh:*)",
+      "Bash(scripts/drive.sh:*)",
       "Bash(node scripts/fetch_bank.js:*)",
       "Bash(rclone --config ./rclone.conf:*)",
       "Bash(sqlite3 data/finance.db:*)",
