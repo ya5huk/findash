@@ -1,17 +1,17 @@
 ---
 name: fetch-investments
-description: Use when the user says "fetch investments", "fetch ibkr", "fetch interactive brokers", "pull portfolio", "fetch brokerage", "snapshot ibkr", or any portfolio-snapshot equivalent. Interactive-only — runs from a hands-on Claude session that has the official Interactive Brokers connector connected; it is NOT part of the unattended `daily-run` cron flow. Ingests the IBKR connector's trade history into the `trades` ledger on a user-mapped account (so it stops needing trade screenshots), plus a positions snapshot used for reconciliation + new-user bootstrap. Skips gracefully — best-effort, like a failed bank source — when the connector isn't connected.
+description: Use when the user says "fetch investments", "fetch ibkr", "fetch interactive brokers", "pull portfolio", "fetch brokerage", "snapshot ibkr", or any portfolio-snapshot equivalent — and as the best-effort IBKR step inside `daily-run`. The connector authenticates only in interactive sessions, so unattended runs typically skip it with a warning. Ingests the IBKR connector's trade history into the `trades` ledger on a user-mapped account (so it stops needing trade screenshots), plus a positions snapshot used for reconciliation + new-user bootstrap. Skips gracefully — best-effort, like a failed bank source — when the connector isn't connected.
 ---
 
 # fetch-investments
 
-You pull a live portfolio from Interactive Brokers (IBKR) via the official IBKR connector and write it **directly into SQLite**. The authoritative thing you ingest is the **trade history** — buys/sells go into the `trades` ledger on a **user-mapped account**, which is what powers holdings, the stocks-vs-S&P benchmark, and date-accurate cost basis. You *also* write a **positions snapshot** for reconciliation and new-user bootstrap. Unlike `fetch-bank-data` (which drops files in Drive `dump/` for sync to ingest), there is **no document and no Drive file** — IBKR is a live API source, written straight to the DB with `source_doc_id = NULL` (the deliberate audit-trail exception; see [`docs/live-sources.md`](../../docs/live-sources.md)). So you own both the DB write *and* the Drive push, the same way sync owns its backup step.
+You pull a live portfolio from Interactive Brokers (IBKR) via the official IBKR connector and write it **directly into SQLite**. The authoritative thing you ingest is the **trade history** — buys/sells go into the `trades` ledger on a **user-mapped account**, which is what powers holdings, the stocks-vs-S&P benchmark, and date-accurate cost basis. You *also* write a **positions snapshot** for reconciliation and new-user bootstrap. Unlike `fetch-bank-data` (which stages files locally for sync to ingest), there is **no document and no staged file** — IBKR is a live API source, written straight to the DB with `source_doc_id = NULL` (the deliberate audit-trail exception; see [`docs/live-sources.md`](../../docs/live-sources.md)). You never touch Drive: persistence is sync's weekly backup.
 
 **This replaces the old screenshot workflow for new activity.** Historically the user fed trades by dropping screenshots into Drive `dump/`; the connector's trade feed makes that unnecessary going forward. Existing screenshot trades are left untouched — you only ingest connector trades *after* the latest trade already on the mapped account (see [Trades](#3-trades-the-core-judgment-not-mechanics)).
 
 **One resolved account.** IBKR data attaches to **one findash account**, resolved automatically (see [§1](#1-preconditions--resolve-the-mapped-account)): an existing broker when the ledgers clearly match — for many users the IBKR portfolio is already tracked under another broker (e.g. an Israeli wrapper), and a second account would double-count net worth — or a newly created brokerage account for IBKR-only users. The choice persists as `accounts.live_source='ibkr'`, so it's made at most once.
 
-**Interactive-only.** The IBKR connector is Anthropic's certified Interactive Brokers connector, added by the user through Claude's connector directory (it's a claude.ai connector, *not* a findash-declared MCP server). It authenticates only in an **interactive** Claude session, so this skill is a **manual** step — it is *not* chained into the unattended `daily-run` / `run_daily.sh` cron flow. Run it by hand (then re-render) when you want fresh holdings.
+**Interactive auth, best-effort everywhere.** The IBKR connector is Anthropic's certified Interactive Brokers connector, added by the user through Claude's connector directory (it's a claude.ai connector, *not* a findash-declared MCP server). It authenticates only in an **interactive** Claude session. `daily-run` attempts this skill best-effort: an interactive daily run pulls fresh IBKR data; the unattended `run_daily.sh` run typically finds the connector unavailable and skips with a `⚠️` warning bullet. You can also run it by hand any time (then re-render).
 
 **Best-effort.** If the connector isn't connected (the user hasn't added it, or this is a headless session where it isn't available), **skip and report** — never abort. A user who doesn't use IBKR is just the normal skip case.
 
@@ -24,7 +24,6 @@ You pull a live portfolio from Interactive Brokers (IBKR) via the official IBKR 
 - Local DB: `data/finance.db` (the live working copy; run after a sync so it's current — typically `/findash:sync-finance-data` (or `/findash:daily-run`) first, then this skill, then re-render).
 - SQLite schema + conventions: [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md) — the `trades` table (incl. `external_id`), the `positions` table, and the `source_doc_id = NULL` live-source convention.
 - IBKR source shape + judgment calls: [`docs/live-sources.md`](../../docs/live-sources.md).
-- rclone config: `./rclone.conf` (always pass `--config ./rclone.conf`). Drive root ID: `root_folder_id=…` in `.secrets/findash` `[drive]`.
 
 ## The IBKR connector tools
 
@@ -98,7 +97,7 @@ then call them. If a name has drifted, re-discover by function from `/mcp`.
 
 ### 2. Probe (best-effort)
 
-Find the connector's read tools, then call the **account-summary tool first** as the probe (it also gives the base `currency`). On **any** error — connector not connected, not authenticated, unavailable in this (e.g. headless) session, connection error, or timeout — **stop cleanly**: write nothing, push nothing, report `IBKR: skipped (<short reason>)`. A missing connector must never abort anything.
+Find the connector's read tools, then call the **account-summary tool first** as the probe (it also gives the base `currency`). On **any** error — connector not connected, not authenticated, unavailable in this (e.g. headless) session, connection error, or timeout — **stop cleanly**: write nothing, report `IBKR: skipped (<short reason>)` on stdout, and append `⚠️ IBKR skipped — <short reason>` under `## ⚠️ Warnings` in `data/last_sync_summary.md` (see sync step 8 for the section rules) so the skip reaches the Telegram message. A missing connector must never abort anything.
 
 ### 3. Trades — the core (judgment, not mechanics)
 
@@ -130,18 +129,19 @@ Write a positions snapshot to the **mapped account** from `get_account_positions
 
 For held symbols Yahoo covers poorly (esp. LSE/GBP), pull `get_price_snapshot` / `get_price_history` and write `INSERT OR IGNORE INTO prices (security_id, date, close_minor, currency)` (the `OR IGNORE` keeps a document-sourced rate from being clobbered). Yahoo remains the fallback and the benchmark source. Prefer writing IBKR prices for *historical* dates the render-time Yahoo refresh won't `INSERT OR REPLACE` over.
 
-### 6. Persist the DB to Drive (mirror sync step 6)
+### 6. Report + summary
 
-Only if you wrote rows. Mirror sync's backup exactly — overwrite the vault DB and drop a timestamped copy:
-```bash
-rclone --config ./rclone.conf copyto data/finance.db gdrive:finance.db --drive-root-folder-id=<ROOT_ID>
-rclone --config ./rclone.conf copyto data/finance.db gdrive:backups/finance-<YYYY-MM-DD-HHMM>.db --drive-root-folder-id=<ROOT_ID>
+No Drive step: the DB stays local, and sync's weekly backup handles persistence.
+
+On a successful run (probe passed — even with zero new trades), stamp the run journal:
+
+```sql
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta(key,value) VALUES('last_ibkr_at', datetime('now'))
+ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 ```
-On the skip path (step 2 failed), **do not push** — nothing changed.
 
-### 7. Report + summary
-
-- Append IBKR bullets to `data/last_sync_summary.md` under `## Ingested` (the same channel sync uses; if you re-render afterward, it rides along as the second Telegram message). One short sentence, counts only: `IBKR — 4 new trades ingested, 12 positions reconciled, cash in USD + ILS`. If a pre-window gap exists, say so: `… (trade history before <date> is screenshot-sourced; connector window doesn't reach it)`.
+- Append IBKR bullets to `data/last_sync_summary.md` under `## Ingested` (the same channel sync uses; if you re-render afterward, it rides along as the second Telegram message). Emoji + ≤10 words, counts only: `📈 IBKR: 4 new trades, positions reconciled`. If a pre-window gap exists, add a second bullet: `📈 IBKR gap: history before <date> stays screenshot-sourced`.
 - Print one stdout status line:
   - success → `IBKR: ok (<N> new trades, <M> positions, <K> cash currencies)`
   - skip → `IBKR: skipped (<reason>)`
@@ -152,10 +152,10 @@ On the skip path (step 2 failed), **do not push** — nothing changed.
   legacy `account_name` → first-run evidence) and persisted as `accounts.live_source='ibkr'`;
   never create a second IBKR account (it double-counts net worth). Positions are reconcile + bootstrap, not the primary valuation.
 - **Read-only at IBKR.** Never draft, place, modify, or cancel an order, and never transfer or move funds. Use only the connector's reporting tools; deny any other tool when prompted.
-- **Interactive-only.** The IBKR connector authenticates only in a hands-on Claude session, so this skill is never chained into the unattended `daily-run` / cron flow. Run it manually, then re-render.
+- **Interactive auth, best-effort chaining.** The IBKR connector authenticates only in a hands-on Claude session. `daily-run` attempts this skill best-effort; unattended runs skip with a warning bullet. Manual runs (then re-render) work any time.
 - **No document, by design.** IBKR rows carry `source_doc_id = NULL` — the documented exception to first-principle #6 (see `CLAUDE.md` + `docs/live-sources.md`). Idempotency comes from the UNIQUE dedup keys (`(account_id, external_id)` for trades; the snapshot keys for positions/balances), not a `documents` row.
 - **Best-effort.** Connector missing / unauthenticated / unavailable → skip + report, never abort.
-- **Judgment over mechanics.** The trade-handoff cross-check, deriving trade currency from the security, symbol-matching to existing securities, the transfer-vs-expense call on IBKR funding, the reconciliation note — all yours (principle #2). The only scripts here are `sqlite3` and `rclone`.
+- **Judgment over mechanics.** The trade-handoff cross-check, deriving trade currency from the security, symbol-matching to existing securities, the transfer-vs-expense call on IBKR funding, the reconciliation note — all yours (principle #2). The only script here is `sqlite3`.
 - **Privacy / log hygiene.** Never print balances, positions, account ids, prices, or net-liquidation values to stdout or the summary — counts and currencies only (principle #1; this repo is public).
-- **Atomicity.** Wrap the mapped account's writes in one transaction; push the DB only after they commit.
+- **Atomicity.** Wrap the mapped account's writes in one transaction.
 - **Money as integers.** `price_minor` / `fees_minor` / `amount_minor` in the currency's minor unit; watch the already-minor `GBp`/`GBX`/`ILA` so you don't ×100 twice.

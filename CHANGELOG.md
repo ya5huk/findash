@@ -4,6 +4,38 @@ All notable changes to findash are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the project is versioned via the
 plugin manifest (`.claude-plugin/plugin.json`).
 
+## [Unreleased]
+
+### Changed
+- **Local staging is the fetch→sync handoff.** `fetch-bank-data` stages its pairs in
+  `inbox/staging/fetched/` and never writes to Drive; sync ingests everything staged
+  and deletes files after commit. Fetched pairs get synthetic `documents` rows
+  (`drive_id = 'local:fetch:<filename>:<sha256-first-12>'`, sidecar notes folded into
+  `documents.notes`) — SQLite is their only persistence.
+- **Every Drive touch is best-effort.** Sync gathers manual Drive drops into
+  `inbox/staging/drive/<driveId>__<name>`, sorts `dump/` drops after ingest (deferred +
+  retried via `documents.drive_path` when Drive is down), and a Drive outage now degrades
+  to a `⚠️` Telegram warning instead of failing the run.
+- **DB backup is weekly and gated.** The Drive backup (vault `finance.db` overwrite +
+  timestamped `backups/` copy) fires only when the last success is >7 days old, tracked
+  in the new `meta` table (`last_db_backup_at`). `fetch-investments` no longer pushes
+  the DB to Drive.
+- **IBKR joined `daily-run` best-effort**, gated on prior onboarding
+  (`accounts.live_source='ibkr'`); unattended runs skip it with a warning since the
+  connector authenticates only in interactive sessions.
+- **Telegram summary restyle** — emoji-prefixed bullets, ≤10 words each, with a
+  `## ⚠️ Warnings` section leading the summary on degraded runs.
+
+### Added
+- `meta` table in `scripts/init-db.sql` (flow state; added idempotently to older DBs) —
+  holds the backup gate (`last_db_backup_at`) plus a run journal (`last_sync_at`,
+  `last_ingest_<source>_at`, `last_ibkr_at`) that feeds new doctor staleness warnings.
+- `scripts/drive.sh` — the one front door for skill Drive access
+  (`ls`/`pull`/`push`/`move`/`delete`); owns `rclone.conf` + the root-ID and fast-fails
+  so a Drive outage degrades in seconds.
+- Backup retention: after a successful weekly backup, sync prunes `gdrive:backups/` to
+  the newest ~8 copies.
+
 ## [1.0.0] - 2026-06-21
 
 findash is now packaged as a Claude Code **plugin**.

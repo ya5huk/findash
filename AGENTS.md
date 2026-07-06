@@ -1,6 +1,6 @@
 # findash
 
-Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault → SQLite → HTML dashboard. Three skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains all three for the morning flow (it's what the cron wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Everything else is data, templates, and documentation.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + local staging → SQLite → HTML dashboard. Skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal and stages them in local `inbox/staging/fetched/` (never Drive); `fetch-investments` pulls live Interactive Brokers trades straight into SQLite (best-effort in the daily flow; interactive auth); `sync-finance-data` gathers new Drive drops into staging (best-effort) and ingests everything staged into SQLite, then backs the DB up to Drive weekly; `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains the steps for the morning flow (it's what the unattended wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Every Drive touch is best-effort — failures degrade to `⚠️` Telegram warnings, never an abort. Everything else is data, templates, and documentation.
 
 Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running from the repo root with `--plugin-dir .` (the cron wrapper passes the same flag).
 
@@ -58,8 +58,11 @@ These shape every decision in this project. Re-read them when you're about to wr
 │       ├── chartjs-adapter-date-fns.bundle.min.js
 │       └── fonts-inline.css  ← EB Garamond + Cormorant Garamond as base64 woff2
 ├── data/
-│   └── finance.db            ← local SQLite, synced to Drive
-├── inbox/                    ← transient downloads from Drive
+│   └── finance.db            ← local SQLite (source of truth), backed up to Drive weekly
+├── inbox/
+│   └── staging/              ← the fetch→sync handoff; sync deletes files after ingest
+│       ├── fetched/          ← bank pairs staged by fetch-bank-data
+│       └── drive/            ← Drive pulls, filenames prefixed <driveId>__
 ├── output/
 │   └── dashboard.html        ← single self-contained file (CSS + JS + fonts inlined)
 └── scripts/
@@ -129,4 +132,4 @@ Skills are invoked as `/findash:<skill>`; the phrases below also trigger them by
 - **"doctor"** / **"finance doctor"** / **"check finance setup"** / **"what's missing"** → `findash-doctor` skill
 - **"set up findash"** / **"onboard"** / **"first-time setup"** / **"configure findash"** → `setup` skill
 
-The typical morning flow is `fetch → sync → render` — now wrapped by `daily-run` (one command, or `scripts/run_daily.sh` unattended): fetch lands new transactions in Drive `dump/`; sync ingests everything in `dump/` (plus anything else newly in the vault) into SQLite; render reads SQLite into the HTML dashboard and ships it to Telegram.
+The typical morning flow is `fetch → IBKR → sync → render` — wrapped by `daily-run` (one command, or `scripts/run_daily.sh` unattended): fetch stages new transactions in local `inbox/staging/fetched/`; the IBKR step runs best-effort (interactive auth; unattended runs skip with a `⚠️` warning); sync gathers new Drive drops into staging (best-effort) and ingests everything staged into SQLite, deleting staged files after commit, then backs the DB up to Drive weekly; render reads SQLite into the HTML dashboard and ships it to Telegram, warnings riding along in the summary message.

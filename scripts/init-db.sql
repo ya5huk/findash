@@ -28,6 +28,14 @@ CREATE TABLE documents (
 CREATE INDEX idx_documents_doc_type ON documents(doc_type);
 CREATE INDEX idx_documents_doc_date ON documents(doc_date);
 
+-- Flow state, one row per key. Currently: 'last_db_backup_at' = ISO UTC timestamp of the
+-- last successful Drive backup (the weekly gate). Skills add this table idempotently
+-- (CREATE TABLE IF NOT EXISTS) on databases created before it existed.
+CREATE TABLE meta (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
+
 -- Anything that holds value. Includes credit cards (liability; treat balance as negative).
 CREATE TABLE accounts (
   id                INTEGER PRIMARY KEY,

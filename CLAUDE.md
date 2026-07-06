@@ -1,6 +1,6 @@
 # findash
 
-Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault → SQLite → HTML dashboard. Skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal into Drive `dump/`; `sync-finance-data` ingests everything in the vault into SQLite; `fetch-investments` pulls live Interactive Brokers **trades** straight into SQLite, mapped onto an account you choose (no document — a live API source via the official IBKR connector; interactive-only); `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains the unattended steps (fetch → sync → render) for the morning flow (it's what the unattended wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Everything else is data, templates, and documentation.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + local staging → SQLite → HTML dashboard. Skills do the work — `fetch-bank-data` pulls fresh transactions from Hapoalim + Cal and stages them in local `inbox/staging/fetched/` (never Drive); `sync-finance-data` gathers new Drive drops into staging (best-effort) and ingests everything staged into SQLite, then backs the DB up to Drive weekly; `fetch-investments` pulls live Interactive Brokers **trades** straight into SQLite, mapped onto an account you choose (no document — a live API source via the official IBKR connector; interactive auth); `render-finance-dashboard` reads SQLite into the HTML. `daily-run` chains the steps (fetch → IBKR best-effort → sync → render) for the morning flow (it's what the unattended wrapper invokes), `setup` handles first-time onboarding, and `findash-doctor` audits the install. Drive itself is human-territory: the flow only reads it, sorts `dump/` drops, and writes the weekly DB backup — every Drive touch is best-effort and degrades to a `⚠️` Telegram warning, never an abort. Everything else is data, templates, and documentation.
 
 Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running Claude Code from the repo root with `claude --plugin-dir .` (the unattended wrapper passes the same flag).
 
@@ -20,9 +20,9 @@ These shape every decision in this project. Re-read them when you're about to wr
 
 5. **Money as integers.** All amounts stored as `amount_minor INTEGER`. Multiply on the way in, divide on the way out. Never `REAL` for money.
 
-6. **Audit trail is non-negotiable.** Every row in every fact table has a `source_doc_id` pointing back to `documents`. If a row can't cite its source, it doesn't get inserted. **One deliberate exception:** live-API sources (IBKR via `fetch-investments`) have no document, so their rows carry `source_doc_id = NULL` and rely on UNIQUE dedup keys for idempotency instead — see `docs/live-sources.md`. This applies to live sources only; document sources must always cite a doc.
+6. **Audit trail is non-negotiable.** Every row in every fact table has a `source_doc_id` pointing back to `documents`. If a row can't cite its source, it doesn't get inserted. Locally-staged fetch pairs are documents too — they get a synthetic `drive_id` (`local:fetch:<filename>:<sha256-first-12>`) plus `raw_hash`, even though the staged file itself is deleted after ingest. **One deliberate exception:** live-API sources (IBKR via `fetch-investments`) have no document at all, so their rows carry `source_doc_id = NULL` and rely on UNIQUE dedup keys for idempotency instead — see `docs/live-sources.md`. This applies to live sources only; file sources must always cite a doc.
 
-7. **Idempotency.** Running any skill twice on the same Drive state must be a no-op. Dedup keys: `documents.drive_id` for files; `(account_id, as_of, component)` for balances; `(period_start, period_end, employer)` for payslips.
+7. **Idempotency.** Running any skill twice on the same Drive + staging state must be a no-op. Dedup keys: `documents.drive_id` for Drive files; `local:fetch:<filename>:<hash>` synthetic ids for staged fetch pairs; `(account_id, as_of, component)` for balances; `(period_start, period_end, employer)` for payslips.
 
 ## What lives where
 
@@ -60,12 +60,16 @@ These shape every decision in this project. Re-read them when you're about to wr
 │       ├── chartjs-adapter-date-fns.bundle.min.js
 │       └── fonts-inline.css  ← EB Garamond + Cormorant Garamond as base64 woff2
 ├── data/
-│   └── finance.db            ← local SQLite, synced to Drive
-├── inbox/                    ← transient downloads from Drive
+│   └── finance.db            ← local SQLite (source of truth), backed up to Drive weekly
+├── inbox/
+│   └── staging/              ← the fetch→sync handoff; sync deletes files after ingest
+│       ├── fetched/          ← bank pairs staged by fetch-bank-data
+│       └── drive/            ← Drive pulls, filenames prefixed <driveId>__
 ├── output/
 │   └── dashboard.html        ← single self-contained file (CSS + JS + fonts inlined)
 └── scripts/
     ├── init-db.sql           ← schema definition
+    ├── drive.sh              ← all skill Drive ops (ls/pull/push/move/delete); owns rclone.conf + root-ID
     ├── xlsx_to_rows.py       ← stdlib-only XLSX → JSON parser
     ├── bundle-assets.py      ← one-shot vendor script for templates/vendor/
     ├── fetch_bank.js         ← Puppeteer wrapper around israeli-bank-scrapers (Hapoalim + Cal)
@@ -117,7 +121,7 @@ These shape every decision in this project. Re-read them when you're about to wr
      ```
      Log in if prompted, solve CAPTCHA/2FA if it appears, trust the device if offered, then press Enter in the terminal. Profile is saved to `~/.cache/findash/chromium-profile/visaCal/`.
   7. Either source whose credentials are absent (no `[<company>]` section in `.secrets/findash`) is silently skipped — a one-bank user can still run the skill.
-- **Interactive Brokers (`fetch-investments` skill, optional):** IBKR is **not** a findash-declared MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. It writes **trades** straight to SQLite (no Drive document), mapped onto an account you choose, plus a reconcile/bootstrap positions snapshot. **Interactive-only:** the connector authenticates solely in a hands-on Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended `daily-run` flow.
+- **Interactive Brokers (`fetch-investments` skill, optional):** IBKR is **not** a findash-declared MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. It writes **trades** straight to SQLite (no document, no Drive), mapped onto an account you choose, plus a reconcile/bootstrap positions snapshot. **Interactive auth:** the connector authenticates solely in a hands-on Claude session. `daily-run` attempts the skill best-effort (gated on IBKR having been onboarded) — interactive daily runs pull fresh data, unattended runs skip with a `⚠️` Telegram warning.
   1. Add the connector once (needs a browser): in Claude, `+` → **Connectors** → **Add connector** → **Browse connectors**, search **"ibkr"**, pick **Interactive Brokers (IBKR)** (under *Anthropic & Partners*), and log in with your IBKR credentials. Confirm with `/mcp` — it should read `Interactive Brokers (IBKR) · connected`. (Restart Claude Code after adding it so the session picks it up; the connector surfaces only when Claude Code is signed in with your Claude.ai subscription, not an API key.)
   2. Account mapping is **automatic**: `fetch-investments` resolves which findash account IBKR feeds and stores it in the DB (`accounts.live_source='ibkr'`) — attach-by-evidence for wrapper brokers, auto-create for IBKR-only users. `[ibkr]` in `.secrets/findash` is only needed for the optional `account_ids=` / `base_currency=` keys (`account_name=` remains a legacy override).
   3. Run `/findash:fetch-investments` in an interactive session to pull trades (+ a reconcile snapshot), then re-render. It's read-only — deny any tool that places an order or moves funds. If the connector isn't connected, the skill just skips, like a bank source with no credentials.
@@ -138,4 +142,4 @@ Skills are invoked as `/findash:<skill>`; the phrases below also trigger them by
 - **"doctor"** / **"finance doctor"** / **"check finance setup"** / **"what's missing"** → `findash-doctor` skill
 - **"set up findash"** / **"onboard"** / **"first-time setup"** / **"configure findash"** → `setup` skill
 
-The typical morning flow is `fetch → sync → render` — wrapped by `daily-run` (one command, or `scripts/run_daily.sh` unattended): fetch lands new transactions in Drive `dump/`; sync ingests everything in `dump/` (plus anything else newly in the vault) into SQLite; render reads SQLite into the HTML dashboard and ships it to Telegram. IBKR is a separate, **interactive-only** step — run `/findash:fetch-investments` by hand (then re-render) to fold live IBKR trades into the dashboard; it's not chained into the unattended flow because the IBKR connector can't authenticate headlessly.
+The typical morning flow is `fetch → IBKR → sync → render` — wrapped by `daily-run` (one command, or `scripts/run_daily.sh` unattended): fetch stages new transactions in local `inbox/staging/fetched/`; the IBKR step runs best-effort (connector auth is interactive, so unattended runs skip it with a `⚠️` warning); sync gathers new Drive drops into staging (best-effort) and ingests everything staged into SQLite, deleting staged files after commit, then backs the DB up to Drive weekly; render reads SQLite into the HTML dashboard and ships it to Telegram, warnings riding along in the summary message. You can also run `/findash:fetch-investments` by hand any time (then re-render).

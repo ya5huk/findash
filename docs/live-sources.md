@@ -29,9 +29,10 @@ rejected in favor of this simpler model.
 Pulled by the [`fetch-investments`](../skills/fetch-investments/SKILL.md) skill through the **official
 Interactive Brokers connector** — Anthropic's certified IBKR connector, added by the user via Claude's
 connector directory (a claude.ai connector, *not* declared in `plugin.json`; its tool names are
-connector-specific, discovered at run time). **Interactive-only:** it authenticates solely in a hands-on
-Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended `daily-run`
-cron flow. Read-only. IBKR is **mapped onto a findash account you choose** (see *Account mapping* below)
+connector-specific, discovered at run time). **Interactive auth:** it authenticates solely in a hands-on
+Claude session. `daily-run` attempts `fetch-investments` best-effort (gated on IBKR having been onboarded) —
+interactive runs pull fresh data; unattended runs skip with a `⚠️` warning bullet in the Telegram summary.
+Manual runs work any time. Read-only. IBKR is **mapped onto a findash account you choose** (see *Account mapping* below)
 and is **trade-fed**: the connector's trade history flows into the `trades` table — the same ledger a
 screenshot-fed brokerage feeds from screenshots. A positions snapshot is written too, but only as a
 reconciliation cross-check and a bootstrap for a brand-new account whose trades don't yet cover its
@@ -98,8 +99,9 @@ hand-edited.
 
 ### Failure is a skip, not an error
 
-The IBKR connector is interactive-only, so it simply isn't there in a headless run, and a user may not have
-added it at all. `fetch-investments` is **best-effort, like a bank source**: any failure (connector not
-connected, not authenticated, unavailable in this session, timeout) writes nothing, pushes nothing, and
-reports `IBKR: skipped (<reason>)` — nothing aborts. The user adds/connects it via Claude's connector
-directory (and confirms with `/mcp`) when convenient, then reruns the skill by hand.
+The IBKR connector authenticates interactively, so it simply isn't there in a headless run, and a user may
+not have added it at all. `fetch-investments` is **best-effort, like a bank source**: any failure (connector
+not connected, not authenticated, unavailable in this session, timeout) writes nothing, reports
+`IBKR: skipped (<reason>)`, and — when IBKR was previously onboarded — adds a `⚠️ IBKR skipped` warning
+bullet to the Telegram summary. Nothing aborts. The user adds/connects it via Claude's connector directory
+(and confirms with `/mcp`) when convenient, then reruns the skill by hand.

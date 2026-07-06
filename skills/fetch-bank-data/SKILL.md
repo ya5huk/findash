@@ -1,11 +1,11 @@
 ---
 name: fetch-bank-data
-description: Use when the user says "fetch bank data", "pull from bank", "fetch hapoalim", "fetch cal", "fetch credit card", "pull from cal", or any morning-equivalent. Pulls fresh transactions + balances from Bank Hapoalim and Cal via `israeli-bank-scrapers`, reasons about each source's data to attach observation tags + a sidecar notes file, and drops paired files into Drive `dump/` for the next `sync-finance-data` run to ingest.
+description: Use when the user says "fetch bank data", "pull from bank", "fetch hapoalim", "fetch cal", "fetch credit card", "pull from cal", or any morning-equivalent. Pulls fresh transactions + balances from Bank Hapoalim and Cal via `israeli-bank-scrapers`, reasons about each source's data to attach observation tags + a sidecar notes file, and stages paired files in local `inbox/staging/fetched/` for the next `sync-finance-data` run to ingest.
 ---
 
 # fetch-bank-data
 
-You pull fresh data from the user's customer-facing bank + credit-card sites and drop reasoned files into Drive `dump/`. **Sync owns ingestion** — your job ends when the files are in `dump/`. You do not touch SQLite, do not call the dashboard, do not send Telegram. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `[section]` in `.secrets/findash` + one more mapping line below.
+You pull fresh data from the user's customer-facing bank + credit-card sites and stage reasoned files in local `inbox/staging/fetched/`. **Sync owns ingestion** — your job ends when the pairs are staged; sync ingests them into SQLite and deletes them after commit. Fetched data never goes to Drive: SQLite is its only persistence. You do not touch SQLite (beyond read-only queries), do not call the dashboard, do not send Telegram. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `[section]` in `.secrets/findash` + one more mapping line below.
 
 ## Where things live
 
@@ -13,9 +13,7 @@ You pull fresh data from the user's customer-facing bank + credit-card sites and
 - Node deps: `scripts/package.json` (`israeli-bank-scrapers` + `puppeteer`; run `cd scripts && npm install` once)
 - Credentials: the `[hapoalim]` / `[cal]` sections of `.secrets/findash` (chmod 600)
 - Per-company Chromium profile (persists trusted-device cookies + soft anti-bot state): `~/.cache/findash/chromium-profile/<companyId>/`
-- Local staging dir for paired files before upload: `inbox/staging/`
-- rclone config: `./rclone.conf` (always pass `--config ./rclone.conf`)
-- Drive root folder ID: the `[drive]` section of `.secrets/findash` (`root_folder_id=…`, chmod 600). Folder layout: [`docs/drive-layout.md`](../../docs/drive-layout.md) (root is the `dump/` parent).
+- Staging dir — the fetch→sync handoff: `inbox/staging/fetched/`
 - SQLite (read-only here, for date-range + own-account vocabulary): `data/finance.db`
 - Doc-type shapes sync will see: [`docs/doc-types/full-statements.md`](../../docs/doc-types/full-statements.md) (`bank_api_dump`, `bank_api_notes`, `cal_api_dump`, `cal_api_notes`)
 
@@ -134,9 +132,9 @@ If a tag would push the filename past ~180 chars, drop the lowest-priority tags 
 
 **Quiet day = no tags.** Plain `2026-05-22-hapoalim-<acct-suffix>-api-fetch.json` is correct when no patterns triggered.
 
-### 6. Write the pair to `inbox/staging/`
+### 6. Write the pair to `inbox/staging/fetched/`
 
-For each account on each source:
+`mkdir -p inbox/staging/fetched` first. For each account on each source:
 
 - `.json` — the full library result for **that account only** (slice `accounts[i]`), pretty-printed. Preserves every field including ones we don't currently use. Sync re-parses from this.
 - `.notes.md` — one bullet per observation:
@@ -154,22 +152,19 @@ Header line names date + company + acct suffix so a sync run reading both files 
 
 If an account has zero txns since the start date, skip writing files for that account — the summary should say "no activity since `<last-date>`".
 
-### 7. Upload pairs to Drive `dump/`
+If a same-named pair is already sitting in staging (an earlier fetch today that sync hasn't ingested yet), overwrite it — the newer scrape supersedes it.
 
-```bash
-rclone --config ./rclone.conf copy --drive-root-folder-id=<ROOT_ID> \
-  inbox/staging/ gdrive:dump/
-```
+### 7. Stop — staging is the handoff
 
-Root ID is `root_folder_id=…` from `.secrets/findash` `[drive]`. After upload succeeds, delete the local `inbox/staging/<file>` (the file lives in Drive now; sync owns the next move).
+Do **not** upload anything, and do **not** delete the pairs. They stay in `inbox/staging/fetched/` until the next `sync-finance-data` run ingests them into SQLite and deletes them after the commit. Pairs left behind by a crashed run are simply picked up by the next sync.
 
 ### 8. Report
 
 Print a compact per-source summary, nothing else. Examples:
 
 ```
-Hapoalim: 23 txns on <acct-a>, 7 txns on <acct-b>, 0 flags. 2 files uploaded to dump/.
-Cal: 17 txns on <acct-suffix>, 2 flags (installments-amazon, fx-usd-zara, pending-3). 1 file uploaded.
+Hapoalim: 23 txns on <acct-a>, 7 txns on <acct-b>, 0 flags. 2 pairs staged for sync.
+Cal: 17 txns on <acct-suffix>, 2 flags (installments-amazon, fx-usd-zara, pending-3). 1 pair staged.
 ```
 
 If a source was skipped: `Hapoalim: skipped (no [hapoalim] credentials).`
@@ -196,6 +191,6 @@ If a source failed: `Cal: failed (errorType=GENERIC, errorMessage=…). Re-run: 
 
 - **Reasoning is yours, parsing is the script's.** The script never categorizes, never decorates, never normalizes. It returns the library's raw output verbatim; everything else (tags, notes, cross-source checks) is your judgment.
 - **Notes are hints, not ground truth.** Sync should verify against the underlying JSON and against cross-source documents (your brokerage's periodic statements, etc.) before trusting any bullet.
-- **Idempotency belongs to sync, not here.** It's fine for two runs in the same morning to upload two near-identical files; sync dedups via `documents.drive_id` (which differs per upload) and via `(account_id, date, …)` content keys when it actually ingests the txns.
-- **Atomicity per source.** If Cal fails mid-flow, no Cal files land in `dump/`. Hapoalim's files (if its run succeeded) are unaffected.
+- **Idempotency belongs to sync, not here.** It's fine for two runs in the same morning to stage near-identical files; sync dedups via the synthetic document id `local:fetch:<filename>:<sha256-first-12>` (identical bytes = no-op skip; changed bytes = re-ingest) and via `(account_id, date, …)` content-key judgment when it actually ingests the txns.
+- **Atomicity per source.** If Cal fails mid-flow, no Cal files land in staging. Hapoalim's files (if its run succeeded) are unaffected.
 - **Adding a new issuer is mechanical.** New `[section]` in `.secrets/findash`, new mapping row in the table above, new env-var pair to load. No script change unless the new issuer's credential shape doesn't match `{username, password}` or `{userCode, password}`.

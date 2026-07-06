@@ -31,7 +31,7 @@
 
 ### API-fetched pairs (emitted by the `fetch-bank-data` skill)
 
-Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`). Each fetch run drops a pair of files into Drive `dump/` per non-empty account: a `.json` raw scrape and a `.notes.md` sidecar with prose observations. Both files describe the same account on the same fetch date — read them together.
+Produced by the `fetch-bank-data` skill (see `skills/fetch-bank-data/SKILL.md`). Each fetch run stages a pair of files in local `inbox/staging/fetched/` per non-empty account — never Drive: a `.json` raw scrape and a `.notes.md` sidecar with prose observations. Both files describe the same account on the same fetch date — read them together. Sync creates **one** `documents` row per pair (synthetic `drive_id = 'local:fetch:<json-filename>:<sha256-first-12>'`), folds the sidecar bullets into `documents.notes`, and deletes both files after the rows commit — SQLite is the pair's only persistence.
 
 **Filename anatomy:**
 

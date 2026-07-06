@@ -179,7 +179,7 @@ It checks binaries, local directories, rclone config, Drive credentials, vendor 
 
 ## 8. First sync and render
 
-Drop source documents into the Drive vault's `dump/` folder. They can be PDFs, XLSX exports, screenshots, or API dumps produced by `/findash:fetch-bank-data`.
+Drop source documents into the Drive vault's `dump/` folder. They can be PDFs, XLSX exports, or screenshots — `dump/` is yours alone; the automatic bank fetch stages its files locally, not in Drive.
 
 Then run the whole flow with one command:
 
@@ -286,7 +286,7 @@ profile, then rerun the daily flow.
 
 You do not need IBKR to use FinDash. If you have an Interactive Brokers account, `fetch-investments` pulls your IBKR **trade history** straight into SQLite — mapped onto a findash account you choose — so holdings, cost basis, and the stocks-vs-S&P benchmark stay current without screenshots. It also writes a positions snapshot for reconciliation, and pulls cash balances.
 
-IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive Brokers connector** from Claude's own connector directory, and it's **interactive-only** — the connector authenticates solely in a hands-on Claude session, so `fetch-investments` is a manual step and is **not** part of the unattended daily run. There's **no password** in `.secrets/findash`; you log in to IBKR through Claude's connector flow.
+IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive Brokers connector** from Claude's own connector directory. The connector authenticates solely in a hands-on Claude session, so while `daily-run` attempts `fetch-investments` best-effort, unattended runs skip it with a warning — run it by hand (then re-render) for fresh holdings. There's **no password** in `.secrets/findash`; you log in to IBKR through Claude's connector flow.
 
 1. **Add the IBKR connector once (needs a browser).** In Claude:
 
@@ -360,8 +360,9 @@ Before scheduling it, verify:
 - For every configured bank/card source, the matching `--setup` command above
   has completed at least once.
 
-(IBKR is not part of the unattended run, so it needs no setup here — it's a
-separate interactive step; see the IBKR section above.)
+(IBKR needs no setup here — its connector can't authenticate unattended, so the
+daily run's best-effort IBKR step will just skip with a warning; see the IBKR
+section above.)
 
 Test the exact wrapper manually:
 

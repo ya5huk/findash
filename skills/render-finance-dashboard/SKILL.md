@@ -58,9 +58,12 @@ You render the booky finance dashboard from the current state of `data/finance.d
    What it does (= the old steps 2+3, now deterministic):
    - Sends `output/dashboard.html` as a document, caption `Finance — <AS_OF_DATE> · <net worth>`
      (literal `·` U+00B7), read from `/tmp/dashboard_meta.json`.
-   - If `data/last_sync_summary.md` exists, prepends `Sync — <AS_OF_DATE>` and sends it as
-     `sendMessage` (plain text; split into ≤4000-char parts on `\n` boundaries), then deletes
-     it on success. Absent → prints `Sync summary: Skipped (no summary)`.
+   - If `data/last_sync_summary.md` exists, sends it as a second `sendMessage` (HTML parse
+     mode; bold title `Sync · <AS_OF_DATE>`; split into ≤3900-char parts on `\n` boundaries;
+     `## Ingested`/`## Triaged` headers render as bold **New**/**Filed**, any other `##`
+     header — e.g. `## ⚠️ Warnings` — passes through as its own bold line), then deletes it on
+     success. The summary may lead with a `⚠️ Warnings` block — that's expected on degraded
+     runs, not an error. Absent → prints `Sync summary: Skipped (no summary)`.
    - Telegram not configured (no `[telegram]` in `.secrets/findash`) → prints `Telegram delivery skipped: …` and exits 0 (local
      file still useful). Never deletes the local dashboard on a Telegram failure.
 

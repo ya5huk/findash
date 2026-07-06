@@ -18,14 +18,14 @@ findash has **five archetypes — one per vault folder.** Every document is an i
 | Archetype (folder) | What generally lands here | Tables it feeds |
 |---|---|---|
 | **`payslips/`** | Israeli payslip PDFs; employment agreements | `payslips`, `payslip_line_items` |
-| **`full-statements/`** | bank checking & credit-card activity — XLSX/PDF exports, app screenshots, and the `fetch-bank-data` skill's API dump + notes pairs | `transactions`, `balances` |
+| **`full-statements/`** | bank checking & credit-card activity — XLSX/PDF exports and app screenshots (the `fetch-bank-data` skill's API dump + notes pairs share this archetype but stay local — see [Full statements](./full-statements.md)) | `transactions`, `balances` |
 | **`investments/`** | brokerage exports, screenshots, manual logs, trade confirmations, periodic statements | `trades`, `securities`, `positions`, `balances`, `transactions`, `fx_rates` |
 | **`long-term-savings/`** | pension, training fund, and bank deposit/savings products | `accounts`, `balances`, `transactions` |
 | **`fx-conversions/`** | internal ILS↔USD conversions inside the brokerage | `transactions`, `fx_rates` |
 
 `documents.doc_type` is a free-text label you set to whatever describes the file (e.g. `harel-pension-statement`) — a human-readable note, **not** a value drawn from a closed set. (One reserved internal label, `yahoo_dividend_estimate`, is written by sync itself and read by the renderer — see [Investments](./investments.md).)
 
-**Routing a `dump/` file:** read it, decide which archetype fits best, and move it into that folder with a descriptive name. There's no required filename format — `drive_id` is what dedups a file, never its name. Most files map cleanly. If something genuinely belongs to none of the five (a new financial domain — say, insurance), use judgment: give it a folder, and add a short prose note to a catalogue page describing what it holds and which tables it feeds. There is **no routing table to grow and no vault re-scan to run** — the archetypes are stable.
+**Routing a `dump/` file:** read it, decide which archetype fits best, and move it into that folder with a descriptive name (the Drive-side move is best-effort — it may defer to the next run if Drive is down, with the destination already recorded in `documents.drive_path`). There's no required filename format — `drive_id` is what dedups a file, never its name. Most files map cleanly. If something genuinely belongs to none of the five (a new financial domain — say, insurance), use judgment: give it a folder, and add a short prose note to a catalogue page describing what it holds and which tables it feeds. There is **no routing table to grow and no vault re-scan to run** — the archetypes are stable.
 
 ## Catalogue
 

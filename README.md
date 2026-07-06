@@ -91,43 +91,40 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
 ## How It Works
 
 ```text
-                          +----------------------+
-                          | findash plugin       |
-                          | skills/* (/findash:) |
-                          +----------+-----------+
-                                     |
-                                     v
-                          +----------------------+
-                          | Google Drive vault   |
-                          | dump/                |
-                          +----------+-----------+
-                                     ^
-                 manual upload       |        automatic fetch
-        statements / PDFs / XLSX ----+---- fresh Hapoalim + Cal data
-                                              fetch-bank-data
-
-                                     |
-                                     v
-                          +----------------------+
-                          | sync-finance-data    |
-                          | AI interpretation    |
-                          | audited inserts      |
-                          +----------+-----------+
-                                     |
-                                     v
-                          +----------------------+
-                          | SQLite               |
-                          | deterministic math   |
-                          +----------+-----------+
-                                     |
-                                     v
-                          +----------------------+
-                          | render dashboard     |
-                          | HTML + Telegram      |
-                          +----------------------+
+   +----------------------+          +----------------------+
+   | Google Drive vault   |          | fetch-bank-data      |
+   | dump/ (human drops:  |          | Hapoalim + Cal via   |
+   | statements/PDF/XLSX) |          | israeli-bank-scrapers|
+   +----------+-----------+          +----------+-----------+
+              | best-effort pull                | local write
+              v                                 v
+   +---------------------------------------------------------+
+   |            inbox/staging/  (local handoff)              |
+   |      drive/<driveId>__file         fetched/pairs        |
+   +----------------------------+----------------------------+
+                                |                +-----------------+
+                                v                | fetch-investments|
+                     +----------------------+    | IBKR connector   |
+                     | sync-finance-data    |    | (best-effort)    |
+                     | AI interpretation    |    +--------+---------+
+                     | audited inserts      |             |
+                     +----------+-----------+             |
+                                |     +-------------------+
+                                v     v
+                     +----------------------+
+                     | SQLite (truth)       |----> weekly backup
+                     | deterministic math   |      to Drive (best-effort)
+                     +----------+-----------+
+                                |
+                                v
+                     +----------------------+
+                     | render dashboard     |
+                     | HTML + Telegram      |
+                     | (+ ⚠️ warnings)      |
+                     +----------------------+
 ```
 
-`sync-finance-data` scans the Drive vault, reasons through each source document, inserts rows with source links into SQLite, and backs the database up to Drive. `render-finance-dashboard` reads SQLite, fetches live prices/FX, fills the template, and writes one portable HTML file.
+`fetch-bank-data` stages fresh bank data locally — it never writes to Drive; Drive is your territory (manual drops) plus the weekly database backup. `sync-finance-data` pulls new Drive drops into staging (best-effort — Drive being down just becomes a `⚠️` Telegram warning), reasons through everything staged, inserts rows with source links into SQLite, deletes staged files after commit, and files your `dump/` drops into their vault folders. `render-finance-dashboard` reads SQLite, fetches live prices/FX, fills the template, and writes one portable HTML file.
 
 The dashboard is self-contained: CSS, fonts, Chart.js, chart data, and markup are inlined into `output/dashboard.html`.
 
@@ -137,12 +134,12 @@ FinDash is operated through the plugin's namespaced skills. The two new entry po
 
 | Skill | Required? | What it does |
 |---|---:|---|
-| `/findash:daily-run` | Entry point | Runs the whole morning flow end-to-end: fetch → sync → render → deliver to Telegram. This is what the cron wrapper invokes. |
+| `/findash:daily-run` | Entry point | Runs the whole morning flow end-to-end: fetch → IBKR (best-effort) → sync → render → deliver to Telegram. This is what the cron wrapper invokes. |
 | `/findash:setup` | Entry point | Guided first-time onboarding: auto-fixes the safe pieces and walks you through the rest. |
-| `/findash:sync-finance-data` | Yes | Reads the Drive vault, applies Claude's judgment to source documents, and writes audited rows into SQLite. |
+| `/findash:sync-finance-data` | Yes | Gathers new Drive drops into local staging (best-effort), applies Claude's judgment to everything staged, writes audited rows into SQLite, and backs the database up to Drive weekly. |
 | `/findash:render-finance-dashboard` | Yes | Renders `output/dashboard.html` from SQLite and optionally sends it to Telegram. |
-| `/findash:fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into Drive `dump/`. |
-| `/findash:fetch-investments` | Optional · interactive | Ingests your Interactive Brokers trade history (plus a reconcile snapshot) into SQLite via the official IBKR connector. Hands-on only — not part of the unattended daily run. |
+| `/findash:fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into local staging for sync. |
+| `/findash:fetch-investments` | Optional | Ingests your Interactive Brokers trade history (plus a reconcile snapshot) into SQLite via the official IBKR connector. Attempted best-effort in the daily run; the connector authenticates only in hands-on sessions, so unattended runs skip it with a warning. |
 | `/findash:findash-doctor` | Recommended | Audits local setup and auto-fixes safe missing pieces. |
 
 Skills live in [`skills/`](skills) and the plugin manifest in [`.claude-plugin/`](.claude-plugin). Claude Code loads them when you run `claude --plugin-dir .` from the repo root.
@@ -265,7 +262,7 @@ You don't have to clone to use FinDash. From any Claude Code session:
 - Telegram: sends `output/dashboard.html` as a bot attachment. Without Telegram, rendering still writes the local dashboard. See [Telegram setup](docs/setup.md#telegram-optional).
 - Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
 - Password-protected payslips: requires `qpdf` and a `[pdf-passwords]` section in `.secrets/findash`. Without it, skip payslip PDFs or add the passwords later.
-- Interactive Brokers: ingests your IBKR **trade history** onto a mapped account (so you stop screenshotting trades), plus a reconciliation snapshot, via Anthropic's official **IBKR connector** — added through Claude's connector directory, not findash config. Interactive-only: run `/findash:fetch-investments` by hand (then re-render); it is not part of the unattended daily run. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
+- Interactive Brokers: ingests your IBKR **trade history** onto a mapped account (so you stop screenshotting trades), plus a reconciliation snapshot, via Anthropic's official **IBKR connector** — added through Claude's connector directory, not findash config. The daily run attempts it best-effort; the connector authenticates only in hands-on sessions, so unattended runs skip it with a warning — run `/findash:fetch-investments` by hand (then re-render) for fresh holdings any time. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
 
 ## Adapting to another country
 

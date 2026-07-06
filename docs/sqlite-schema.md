@@ -21,7 +21,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 
 | Table | One row per | Notes |
 |---|---|---|
-| `documents` | source file ingested | natural key: `drive_id`. every fact links back via `source_doc_id` — except live-API sources (see [live-sources.md](./live-sources.md)) |
+| `documents` | source file ingested | natural key: `drive_id`. Synthetic namespaces for non-Drive sources: `yahoo:div:<ticker>:<date>` (dividend estimates) and `local:fetch:<filename>:<sha256-first-12>` (locally-staged bank fetch pairs — the staged file is deleted after ingest, so `raw_hash` + `notes` are its surviving artifacts). Every fact links back via `source_doc_id` — except live-API sources (see [live-sources.md](./live-sources.md)) |
 | `accounts` | account / fund / card | `kind` is open vocab; new types don't need a new table. `live_source='ibkr'` marks the one account the IBKR live source feeds — see [live-sources.md](./live-sources.md) |
 | `balances` | (account, as_of, component) snapshot | pension has 3 rows per snapshot |
 | `transactions` | money flow | use judgment for `category` and `counterparty` — see [doc-types/classification.md](./doc-types/classification.md) |
@@ -32,6 +32,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 | `fx_rates` | (date, base→quote) | reporting currency is ILS. `source` column: `'document'` = extracted from a Drive doc (the rate the user actually transacted at — authoritative, never overwritten by the Yahoo refresh); `'yahoo'` = filled by `scripts/refresh_prices.py` |
 | `payslips` | one payslip | structured columns for common bits |
 | `payslip_line_items` | one row from a payslip | catch-all for the long tail (bonuses, allowances, custom deductions) |
+| `meta` | flow-state key | `last_db_backup_at` gates the weekly Drive backup; run-journal keys (`last_sync_at`, `last_ingest_<source>_at`, `last_ibkr_at`) feed the doctor's staleness warnings. Added idempotently (`CREATE TABLE IF NOT EXISTS`) on DBs that predate it |
 
 ## Worked example: a pension statement
 

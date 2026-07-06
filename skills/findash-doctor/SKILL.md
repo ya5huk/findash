@@ -18,24 +18,24 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 | # | Category | What | Auto-fix? |
 |---|---|---|---|
 | 1 | Binaries | `qpdf`, `rclone`, `node ≥22.13.0`, `python3`, `sqlite3` on PATH | No |
-| 2 | Dirs | `data/`, `inbox/`, `output/`, `.secrets/` exist | `mkdir -p` |
+| 2 | Dirs | `data/`, `inbox/staging/fetched/`, `inbox/staging/drive/`, `output/`, `.secrets/` exist | `mkdir -p` |
 | 3 | rclone.conf | `./rclone.conf` exists + mode 600 | Perms; OR move `~/.config/rclone/rclone.conf` → `./rclone.conf` if local is absent |
 | 4 | Drive root ID | `.secrets/findash` `[drive]` has a non-placeholder `root_folder_id=` | Perms only |
 | 5 | Secrets | `.secrets/findash` exists + mode 600; note which `[sections]` are filled | Perms only |
 | 6 | npm deps | `scripts/node_modules/` populated | `cd scripts && npm install` |
 | 7 | Vendor | 3 files under `templates/vendor/` | `python3 scripts/bundle-assets.py` |
-| 8 | DB | `data/finance.db` + has tables (incl. `positions`) | `sqlite3 data/finance.db < scripts/init-db.sql` (fresh DB only) |
+| 8 | DB | `data/finance.db` + has tables (incl. `positions`, `meta`) | `sqlite3 data/finance.db < scripts/init-db.sql` (fresh DB only) |
 | 9 | Chromium profiles | `~/.cache/findash/chromium-profile/{hapoalim,visaCal}/` (only when matching secrets exist) | No |
 | 10 | Drive live | `rclone lsf` against vault root succeeds in 5 s | No |
-| 11 | IBKR connector | optional — the official Interactive Brokers connector is added in Claude (claude.ai), not findash config; interactive-only | No |
+| 11 | IBKR connector | optional — the official Interactive Brokers connector is added in Claude (claude.ai), not findash config; interactive auth (unattended daily runs skip it) | No |
 
 Node: parse `node --version`; major ≥ 23, or major = 22 with patch ≥ 22.13.0. Perms: anything with non-zero group/others digit is wrong → `chmod 600`. For Drive live: read `root_folder_id=…` from `.secrets/findash` `[drive]`; if it's missing or the value is empty/placeholder/<20 chars, skip the live call and let check #4 own it.
 
-Positions table (#8): if `data/finance.db` exists but lacks the `positions` table (an older install), **don't** re-run `init-db.sql` against a populated DB — its plain `CREATE TABLE`s will error. The table is added idempotently on the next `/findash:fetch-investments` (or apply `scripts/init-db.sql`'s `positions` block by hand); note it under ⚠️ Optional, not a blocker. IBKR connector (#11): purely informational and **optional** — the official Interactive Brokers connector is added by the user via Claude's connector directory, not by findash, and is interactive-only, so never treat its absence as an install error. If it's visible in this session (`/mcp` shows `Interactive Brokers (IBKR) · connected`), note ✓ OK; otherwise a one-line ⚠️ Optional pointer ("add it via Claude → Connectors if you want portfolio snapshots"). If `data/finance.db` exists and has the `live_source` column, also sanity-check the marker: `SELECT COUNT(*) FROM accounts WHERE live_source='ibkr'` should be 0 or 1, and a marked account must not have `closed_on` set — more than one marked row, or a closed marked row, is a ⚠️ with a one-line explanation (`fetch-investments` refuses to run until it's resolved); zero rows just means `fetch-investments` hasn't run yet. Never print balances, account ids, or positions (principle #1).
+Positions + meta tables (#8): if `data/finance.db` exists but lacks the `positions` or `meta` table (an older install), **don't** re-run `init-db.sql` against a populated DB — its plain `CREATE TABLE`s will error. `positions` is added idempotently on the next `/findash:fetch-investments`, `meta` on the next `/findash:sync-finance-data` (or apply the matching `init-db.sql` block by hand); note under ⚠️ Optional, not a blocker. If `meta.last_db_backup_at` exists and is older than 14 days, add one ⚠️ line — the weekly Drive backup hasn't succeeded lately. Same idea for the run journal: for each configured source, one ⚠️ staleness line when its journal key is missing or >5 days old — `last_ingest_hapoalim_at`/`last_ingest_cal_at` (when the matching `[section]` exists in `.secrets/findash`), `last_ibkr_at` (when an `accounts.live_source='ibkr'` row exists), and `last_sync_at` >3 days regardless. IBKR connector (#11): purely informational and **optional** — the official Interactive Brokers connector is added by the user via Claude's connector directory, not by findash, and is interactive-only, so never treat its absence as an install error. If it's visible in this session (`/mcp` shows `Interactive Brokers (IBKR) · connected`), note ✓ OK; otherwise a one-line ⚠️ Optional pointer ("add it via Claude → Connectors if you want portfolio snapshots"). If `data/finance.db` exists and has the `live_source` column, also sanity-check the marker: `SELECT COUNT(*) FROM accounts WHERE live_source='ibkr'` should be 0 or 1, and a marked account must not have `closed_on` set — more than one marked row, or a closed marked row, is a ⚠️ with a one-line explanation (`fetch-investments` refuses to run until it's resolved); zero rows just means `fetch-investments` hasn't run yet. Never print balances, account ids, or positions (principle #1).
 
 ## Auto-fix order
 
-1. `mkdir -p data inbox output .secrets`
+1. `mkdir -p data inbox/staging/fetched inbox/staging/drive output .secrets`
 2. If `./rclone.conf` is missing but `~/.config/rclone/rclone.conf` exists (rclone's default XDG path — what plain `rclone config` writes to), move it: `mv ~/.config/rclone/rclone.conf ./rclone.conf`. Then re-check perms in step 3. (Not a symlink — the project owns this file.)
 3. `chmod 600` `rclone.conf` and `.secrets/findash` if either exists and is looser than 600
 4. Init DB if missing/empty (needs `sqlite3`)
@@ -48,8 +48,8 @@ If the Drive live check's preconditions don't hold (rclone or rclone.conf missin
 
 ## Blocker vs Optional
 
-- **Blocker** = fetch / sync / render literally can't run. (`rclone`, `rclone.conf`, Drive root ID, `python3`, vendor assets, `qpdf` when unsure.)
-- **Optional** = one feature degrades. (the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent, the IBKR connector when not added/connected — gates the interactive investments snapshot.)
+- **Blocker** = the local pipeline literally can't run. (`python3`, `sqlite3`, vendor assets, DB init; `node`/npm deps when bank creds exist; `qpdf` when unsure.)
+- **Optional** = one feature degrades. (`rclone` / `rclone.conf` / Drive root ID / Drive-live — Drive down just means manual-drop ingest pauses and the weekly backup skips, with `⚠️` warnings; bank fetch + dashboard still flow. Likewise the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent, and the IBKR connector when not added/connected — gates the investments feed.)
 - **Promotion:** chromium profile for a source becomes a blocker the moment that source's credentials land (a `[<source>]` section in `.secrets/findash`) — creds without a trusted cookie → SMS challenge.
 
 ## Report format
@@ -86,13 +86,11 @@ Example on a partially-set-up macOS box:
 🩺 findash — 2026-05-27
 
 ✅ Fixed
-  inbox/, output/ created • .secrets/findash chmod 600 (was 644)
-
-🚫 Blockers
-  • rclone — `brew install rclone`
-  • Drive vault — connect failed (5s); `rclone --config ./rclone.conf config reconnect gdrive:`
+  inbox/staging/, output/ created • .secrets/findash chmod 600 (was 644)
 
 ⚠️ Optional
+  • rclone — `brew install rclone` (Drive: manual-drop ingest + weekly backup)
+  • Drive vault — connect failed (5s); `rclone --config ./rclone.conf config reconnect gdrive:`
   • .secrets/findash [cal] — only for fetching credit-card data
   • chromium-profile/visaCal — not blocking yet (no [cal] creds)
   • IBKR connector — not connected; add it via Claude → Connectors for portfolio snapshots

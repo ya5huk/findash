@@ -56,7 +56,7 @@ Then: `chmod 600 .secrets/findash`.
 
 These need a browser or an interactive terminal — you cannot do them, so print the exact commands and let the user run them:
 
-- **rclone Google Drive OAuth:** `rclone config` to authorize Drive, then make sure the token ends up at `./rclone.conf` (chmod 600). doctor moves `~/.config/rclone/rclone.conf` → `./rclone.conf` automatically if it finds it there.
+- **rclone Google Drive OAuth:** `rclone config` to authorize Drive, then make sure the token ends up at `./rclone.conf` (chmod 600). doctor moves `~/.config/rclone/rclone.conf` → `./rclone.conf` automatically if it finds it there. Drive powers manual-drop ingest + the weekly DB backup; without it the daily flow still runs degraded (bank fetch + dashboard), so this step can be deferred.
 - **Telegram bot (only if you want delivery):** create a bot via `@BotFather` → `/newbot`, tap **Start** so it can DM you, then put `bot_token` + `chat_id` in `.secrets/findash` `[telegram]`.
 - **Bank-scraper browser seeding (only if you use fetch):** one interactive run per source to seed the trusted-device cookie:
   ```
@@ -64,7 +64,7 @@ These need a browser or an interactive terminal — you cannot do them, so print
   node scripts/fetch_bank.js --company=visaCal --setup
   ```
   Log in, complete OTP / CAPTCHA, trust the device, then press Enter. The profile is saved under `~/.cache/findash/chromium-profile/<companyId>/` and reused silently afterward.
-- **IBKR portfolio (only if you use Interactive Brokers):** IBKR is **not** a findash MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory, and it's **interactive-only** (so it is never part of the unattended cron run).
+- **IBKR portfolio (only if you use Interactive Brokers):** IBKR is **not** a findash MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. Its auth is interactive-only, so the daily run attempts it best-effort and unattended runs skip it with a warning.
   1. **Add the connector once:** in Claude, `+` → **Connectors** → **Add connector** → **Browse connectors**, search **"ibkr"**, pick **Interactive Brokers (IBKR)** (under *Anthropic & Partners*), and log in with your IBKR credentials. Confirm with `/mcp` (`Interactive Brokers (IBKR) · connected`), and restart Claude Code so the session picks it up.
   2. **Account mapping is automatic.** `fetch-investments` resolves which findash account IBKR
      feeds (attaching to an existing broker when the ledgers clearly match — some brokers are
