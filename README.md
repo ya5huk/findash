@@ -187,7 +187,7 @@ scripts/              mechanical parsers, scrapers, renderers, daily runner
 templates/            dashboard shell, CSS, and chart code
 .secrets/findash      single local INI of credentials, gitignored
 data/                 local SQLite database, gitignored
-inbox/                transient downloads, gitignored
+inbox/staging/        local fetch→sync handoff (deleted after ingest), gitignored
 output/               rendered dashboard, gitignored
 ```
 
@@ -227,7 +227,7 @@ claude --plugin-dir .
 /findash:daily-run
 ```
 
-This fetches, syncs, renders, and delivers to Telegram. To run pieces by hand, use `/findash:fetch-bank-data`, `/findash:sync-finance-data`, and `/findash:render-finance-dashboard`.
+This fetches, syncs, renders, and delivers to Telegram. To run pieces by hand, use `/findash:fetch-bank-data`, `/findash:fetch-investments`, `/findash:sync-finance-data`, and `/findash:render-finance-dashboard`.
 
 For unattended (cron/launchd) daily runs, schedule the wrapper — it loads the plugin and runs `/findash:daily-run`:
 
