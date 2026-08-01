@@ -28,6 +28,9 @@ from yahoo_dividends import (  # noqa: E402
     project_next as _yd_project_next,
     project_through as _yd_project_through,
 )
+from lib.ssl_bootstrap import ensure_ca_bundle  # noqa: E402
+
+ensure_ca_bundle()  # before any HTTPS call; no-op unless the interpreter lacks a CA store
 
 
 # ---------- paths ----------

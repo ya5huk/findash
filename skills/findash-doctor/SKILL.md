@@ -40,7 +40,7 @@ Positions + meta tables (#8): if `data/finance.db` exists but lacks the `positio
 3. `chmod 600` `rclone.conf` and `.secrets/findash` if either exists and is looser than 600
 4. Init DB if missing/empty (needs `sqlite3`)
 5. `(cd scripts && npm install)` if `node_modules/` empty (needs valid `node`; stream stderr)
-6. `python3 scripts/bundle-assets.py` if any vendor file missing (needs `python3`). On macOS, if it fails with `SSL: CERTIFICATE_VERIFY_FAILED`, fix and retry once: `pip3 install --upgrade certifi` then run the Python.org cert installer for the active version (`/Applications/Python\ <MAJOR.MINOR>/Install\ Certificates.command`). If the retry succeeds, list the cert fix and the asset bundle as two separate ✅ Fixed bullets. If it still fails, that's a 🚫 Blocker.
+6. `python3 scripts/bundle-assets.py` if any vendor file missing (needs `python3`). `SSL: CERTIFICATE_VERIFY_FAILED` should no longer occur: the HTTPS-fetching scripts point a cert-less Python at the system CA bundle themselves (`scripts/lib/ssl_bootstrap.py`). If it appears anyway, no known system bundle exists on this machine - fix and retry once: `pip3 install --upgrade certifi` then run the Python.org cert installer for the active version (`/Applications/Python\ <MAJOR.MINOR>/Install\ Certificates.command`). If the retry succeeds, list the cert fix and the asset bundle as two separate ✅ Fixed bullets. If it still fails, that's a 🚫 Blocker.
 
 Re-check after each fix so the report shows post-fix state. **Don't** auto-install OS-level binaries (Homebrew / apt), touch nvm, generate creds, run `rclone config`, or run anything `--setup`. (Pip / npm / vendored asset downloads are fine — they're local, idempotent, and the whole point of auto-fix.)
 

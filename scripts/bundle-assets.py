@@ -16,6 +16,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from lib.ssl_bootstrap import ensure_ca_bundle
+
+ensure_ca_bundle()  # before any HTTPS call; no-op unless the interpreter lacks a CA store
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_DIR = PROJECT_ROOT / "templates" / "vendor"
 
