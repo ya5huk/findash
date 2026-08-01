@@ -41,6 +41,10 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
+from lib.ssl_bootstrap import ensure_ca_bundle
+
+ensure_ca_bundle()  # before any HTTPS call; no-op unless the interpreter lacks a CA store
+
 
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; findash/1.0)"}
 

@@ -21,6 +21,17 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || { echo "run_daily: cannot cd to repo root '$REPO_ROOT'" >&2; exit 1; }
 
+# A python.org macOS framework build ships without a linked CA store (until its
+# "Install Certificates.command" is run once), so every urllib HTTPS call dies
+# with CERTIFICATE_VERIFY_FAILED. Point the whole run at the standard macOS
+# system bundle when nothing else is configured; the repo's Python scripts also
+# self-heal via scripts/lib/ssl_bootstrap.py, but this export covers ad-hoc
+# python the skills run mid-flow. On Linux the file doesn't exist (or is the
+# right bundle anyway) and this is a no-op.
+if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/cert.pem ]; then
+    export SSL_CERT_FILE=/etc/ssl/cert.pem
+fi
+
 CLAUDE=${CLAUDE_BIN:-$(command -v claude)}
 if [ -z "$CLAUDE" ]; then
     echo "run_daily: claude binary not found; set CLAUDE_BIN=/path/to/claude" >&2

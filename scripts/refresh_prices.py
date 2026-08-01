@@ -32,6 +32,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from lib.ssl_bootstrap import ensure_ca_bundle
+
+ensure_ca_bundle()  # before any HTTPS call; no-op unless the interpreter lacks a CA store
+
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; findash/1.0)"}
 REQUEST_DELAY_S = 0.25
 RETRY_SLEEP_S = 2.0

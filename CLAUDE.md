@@ -75,7 +75,7 @@ These shape every decision in this project. Re-read them when you're about to wr
     ├── fetch_bank.js         ← Puppeteer wrapper around israeli-bank-scrapers (Hapoalim + Cal)
     ├── run_daily.sh          ← unattended wrapper: loads the plugin, runs /findash:daily-run
     ├── com.findash.daily.plist ← macOS LaunchAgent template for the daily run (header = install/manage)
-    ├── lib/                  ← shared secret-file parsers (secrets.mjs, findash_secrets.py)
+    ├── lib/                  ← shared helpers: secret-file parsers (secrets.mjs, findash_secrets.py) + ssl_bootstrap.py (CA-bundle guard for cert-less Pythons)
     ├── package.json          ← npm deps for fetch_bank.js (`cd scripts && npm install`)
     └── node_modules/         ← gitignored
 ```
