@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinDash — your financial life, in orbit</title>
+  <style>
+    :root {
+      --paper: #f4eddf;
+      --paper-deep: #ebe0cc;
+      --ink: #29231e;
+      --muted: #72685b;
+      --rule: #c8baa2;
+      --ribbon: #8b1a1a;
+      --gold: #a48c47;
+      --green: #3f6248;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 1600px;
+      height: 1000px;
+      margin: 0;
+      overflow: hidden;
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      font-variant-numeric: oldstyle-nums tabular-nums;
+    }
+
+    .poster {
+      position: relative;
+      width: 1600px;
+      height: 1000px;
+      isolation: isolate;
+    }
+
+    .poster::before,
+    .poster::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+    }
+
+    .poster::before {
+      inset: 38px;
+      border: 1px solid var(--rule);
+    }
+
+    .poster::after {
+      inset: 48px;
+      border: 1px solid rgba(200, 186, 162, 0.46);
+    }
+
+    .kicker {
+      position: absolute;
+      top: 69px;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+    }
+
+    .kicker::before,
+    .kicker::after {
+      content: "";
+      display: inline-block;
+      width: 72px;
+      height: 1px;
+      margin: 0 18px 4px;
+      background: var(--gold);
+    }
+
+    .orbit-map {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: -1;
+    }
+
+    .orbit {
+      fill: none;
+      stroke: var(--rule);
+      stroke-width: 1;
+      stroke-dasharray: 3 11;
+      opacity: 0.82;
+    }
+
+    .orbit.inner {
+      stroke: var(--gold);
+      stroke-dasharray: none;
+      opacity: 0.34;
+    }
+
+    .connector {
+      fill: none;
+      stroke: var(--rule);
+      stroke-width: 1;
+    }
+
+    .connector-dot { fill: var(--gold); }
+
+    .core {
+      position: absolute;
+      left: 616px;
+      top: 326px;
+      width: 368px;
+      height: 348px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background: var(--paper);
+      border: 1px solid var(--gold);
+      border-radius: 50%;
+      box-shadow: 0 0 0 10px var(--paper), 0 0 0 11px rgba(164, 140, 71, 0.35);
+      animation: core-in 900ms cubic-bezier(.2,.75,.2,1) both;
+    }
+
+    .core-mark {
+      color: var(--gold);
+      font-size: 20px;
+      line-height: 1;
+      margin-bottom: 15px;
+    }
+
+    .core h1 {
+      margin: 0;
+      font-size: 74px;
+      font-weight: 500;
+      letter-spacing: -0.055em;
+      line-height: 0.93;
+    }
+
+    .core .rule {
+      width: 112px;
+      height: 2px;
+      margin: 22px 0 17px;
+      background: var(--ribbon);
+    }
+
+    .core p {
+      width: 235px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      font-style: italic;
+      line-height: 1.35;
+    }
+
+    .core-meta {
+      margin-top: 22px;
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+
+    .satellite {
+      position: absolute;
+      width: 292px;
+      min-height: 126px;
+      padding: 0 8px 14px;
+      background: var(--paper);
+      animation: satellite-in 700ms cubic-bezier(.2,.75,.2,1) both;
+    }
+
+    .satellite::after {
+      content: "";
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 0;
+      height: 1px;
+      background: var(--rule);
+    }
+
+    .satellite h2 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      margin: 0 0 11px;
+      font-size: 14px;
+      line-height: 1;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .satellite h2 span {
+      color: var(--gold);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+    }
+
+    .satellite p {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .satellite svg {
+      display: block;
+      width: 100%;
+      overflow: visible;
+    }
+
+    .gridline { stroke: var(--rule); stroke-width: 1; opacity: 0.45; }
+    .ink-line { fill: none; stroke: var(--ink); stroke-width: 2.4; }
+    .green-line { fill: none; stroke: var(--green); stroke-width: 2.4; }
+    .gold-line { fill: none; stroke: var(--gold); stroke-width: 2; stroke-dasharray: 5 5; }
+    .red-line { fill: none; stroke: var(--ribbon); stroke-width: 2; }
+    .bar { fill: var(--ink); }
+    .bar-muted { fill: var(--rule); }
+    .bar-green { fill: var(--green); }
+    .bar-gold { fill: var(--gold); }
+
+    .net-worth { left: 156px; top: 202px; animation-delay: 110ms; }
+    .spending { left: 652px; top: 137px; animation-delay: 200ms; }
+    .portfolio { left: 1152px; top: 218px; animation-delay: 290ms; }
+    .cash-flow { left: 164px; top: 692px; animation-delay: 380ms; }
+    .evidence { left: 654px; top: 758px; animation-delay: 470ms; }
+    .payslips { left: 1149px; top: 692px; animation-delay: 560ms; }
+
+    .donut-wrap {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+
+    .donut-wrap svg { width: 76px; height: 76px; flex: 0 0 auto; }
+
+    .legend {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend i {
+      display: inline-block;
+      width: 14px;
+      height: 2px;
+      margin: 0 7px 3px 0;
+      background: var(--ink);
+    }
+
+    .legend .gold { background: var(--gold); }
+    .legend .green { background: var(--green); }
+    .legend .red { background: var(--ribbon); }
+
+    .ledger {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px 18px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .ledger-row { display: contents; }
+
+    .ledger-row span:last-child {
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .ledger-rule {
+      grid-column: 1 / -1;
+      height: 1px;
+      background: rgba(200, 186, 162, 0.65);
+    }
+
+    .footer {
+      position: absolute;
+      left: 0;
+      bottom: 68px;
+      width: 100%;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .footer strong { color: var(--ink); font-weight: 700; }
+
+    @keyframes core-in {
+      from { opacity: 0; transform: scale(0.93); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes satellite-in {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="poster" aria-label="FinDash product overview">
+    <div class="kicker">Your financial life · one local view</div>
+
+    <svg class="orbit-map" viewBox="0 0 1600 1000" aria-hidden="true">
+      <ellipse class="orbit" cx="800" cy="500" rx="555" ry="326" />
+      <ellipse class="orbit inner" cx="800" cy="500" rx="430" ry="253" />
+      <path class="connector" d="M460 293 C548 319 577 354 633 397" />
+      <path class="connector" d="M800 269 L800 326" />
+      <path class="connector" d="M1145 305 C1064 328 1025 361 969 407" />
+      <path class="connector" d="M461 748 C552 712 584 678 638 632" />
+      <path class="connector" d="M800 674 L800 758" />
+      <path class="connector" d="M1143 748 C1055 714 1021 675 965 630" />
+      <circle class="connector-dot" cx="633" cy="397" r="3.5" />
+      <circle class="connector-dot" cx="800" cy="326" r="3.5" />
+      <circle class="connector-dot" cx="969" cy="407" r="3.5" />
+      <circle class="connector-dot" cx="638" cy="632" r="3.5" />
+      <circle class="connector-dot" cx="800" cy="674" r="3.5" />
+      <circle class="connector-dot" cx="965" cy="630" r="3.5" />
+    </svg>
+
+    <section class="core">
+      <div class="core-mark">✦</div>
+      <h1>FinDash</h1>
+      <div class="rule"></div>
+      <p>Every financial thread, reconciled into one quiet view.</p>
+      <div class="core-meta">Localhost · SQLite · live quotes</div>
+    </section>
+
+    <section class="satellite net-worth">
+      <h2>Net worth <span>all accounts</span></h2>
+      <svg viewBox="0 0 276 66" role="img" aria-label="Synthetic rising net worth line">
+        <line class="gridline" x1="0" y1="58" x2="276" y2="58" />
+        <line class="gridline" x1="0" y1="31" x2="276" y2="31" />
+        <path class="ink-line" d="M0 55 C21 53 28 45 49 47 S81 36 99 39 S129 31 148 33 S181 22 199 25 S230 12 246 17 S264 8 276 6" />
+        <circle cx="276" cy="6" r="4" fill="#8b1a1a" />
+      </svg>
+      <p>Cash, savings, retirement, and investments—one history.</p>
+    </section>
+
+    <section class="satellite spending">
+      <h2>Spending <span>real categories</span></h2>
+      <div class="donut-wrap">
+        <svg viewBox="0 0 80 80" role="img" aria-label="Synthetic expense category ring">
+          <circle cx="40" cy="40" r="29" fill="none" stroke="#d7cbb7" stroke-width="9" />
+          <circle cx="40" cy="40" r="29" fill="none" stroke="#29231e" stroke-width="9" stroke-dasharray="74 108" transform="rotate(-90 40 40)" />
+          <circle cx="40" cy="40" r="29" fill="none" stroke="#a48c47" stroke-width="9" stroke-dasharray="45 137" stroke-dashoffset="-74" transform="rotate(-90 40 40)" />
+          <circle cx="40" cy="40" r="29" fill="none" stroke="#3f6248" stroke-width="9" stroke-dasharray="31 151" stroke-dashoffset="-119" transform="rotate(-90 40 40)" />
+        </svg>
+        <div class="legend">
+          <span><i></i>Living</span><span><i class="gold"></i>Food</span>
+          <span><i class="green"></i>Travel</span><span><i class="red"></i>Other</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="satellite portfolio">
+      <h2>Portfolio <span>vs benchmark</span></h2>
+      <svg viewBox="0 0 276 66" role="img" aria-label="Synthetic portfolio and benchmark lines">
+        <line class="gridline" x1="0" y1="58" x2="276" y2="58" />
+        <path class="green-line" d="M0 55 C28 53 35 43 59 46 S96 32 120 35 S160 24 184 27 S227 11 276 6" />
+        <path class="gold-line" d="M0 55 C30 51 44 49 67 45 S111 39 137 35 S181 28 212 20 S250 14 276 11" />
+      </svg>
+      <p>Holdings, funding, and a price-only benchmark in context.</p>
+    </section>
+
+    <section class="satellite cash-flow">
+      <h2>Cash flow <span>month by month</span></h2>
+      <svg viewBox="0 0 276 66" role="img" aria-label="Synthetic monthly income and spending bars">
+        <line class="gridline" x1="0" y1="57" x2="276" y2="57" />
+        <rect class="bar-muted" x="10" y="18" width="14" height="39" />
+        <rect class="bar-green" x="27" y="8" width="14" height="49" />
+        <rect class="bar-muted" x="66" y="25" width="14" height="32" />
+        <rect class="bar-green" x="83" y="5" width="14" height="52" />
+        <rect class="bar-muted" x="122" y="17" width="14" height="40" />
+        <rect class="bar-green" x="139" y="12" width="14" height="45" />
+        <rect class="bar-muted" x="178" y="28" width="14" height="29" />
+        <rect class="bar-green" x="195" y="7" width="14" height="50" />
+        <rect class="bar-muted" x="234" y="21" width="14" height="36" />
+        <rect class="bar-green" x="251" y="10" width="14" height="47" />
+      </svg>
+      <p>Income, spending, and net flow with honest coverage windows.</p>
+    </section>
+
+    <section class="satellite evidence">
+      <h2>Evidence ledger <span>SQLite truth</span></h2>
+      <div class="ledger" aria-label="Evidence ledger source status">
+        <div class="ledger-row"><span>Bank &amp; card feeds</span><span>linked</span></div>
+        <div class="ledger-rule"></div>
+        <div class="ledger-row"><span>Statements &amp; payslips</span><span>cited</span></div>
+        <div class="ledger-rule"></div>
+        <div class="ledger-row"><span>Brokerage observations</span><span>reconciled</span></div>
+      </div>
+    </section>
+
+    <section class="satellite payslips">
+      <h2>Payslips <span>income history</span></h2>
+      <svg viewBox="0 0 276 66" role="img" aria-label="Synthetic gross and net income bars">
+        <line class="gridline" x1="0" y1="57" x2="276" y2="57" />
+        <rect class="bar-gold" x="15" y="13" width="25" height="44" />
+        <rect class="bar" x="43" y="25" width="25" height="32" />
+        <rect class="bar-gold" x="86" y="9" width="25" height="48" />
+        <rect class="bar" x="114" y="21" width="25" height="36" />
+        <rect class="bar-gold" x="157" y="5" width="25" height="52" />
+        <rect class="bar" x="185" y="18" width="25" height="39" />
+        <rect class="bar-gold" x="228" y="11" width="25" height="46" />
+        <rect class="bar" x="256" y="23" width="15" height="34" />
+      </svg>
+      <p>Gross, net, tax, pension, and long-term savings together.</p>
+    </section>
+
+    <div class="footer"><strong>Private by default.</strong> Your database and documents stay local.</div>
+  </main>
+</body>
+</html>
