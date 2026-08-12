@@ -57,6 +57,19 @@
     return `${sign}${abs.toLocaleString('en-IL', { maximumFractionDigits: 0 })} ${currency}`;
   };
 
+  const isoDate = (value) => new Date(`${value}T00:00:00Z`);
+
+  const showEmpty = (el, message) => {
+    if (!el) return;
+    el.hidden = true;
+    const note = document.createElement('p');
+    note.className = 'footnote';
+    const em = document.createElement('em');
+    em.textContent = message;
+    note.appendChild(em);
+    el.parentNode?.appendChild(note);
+  };
+
   function render() {
     const D = window.FINANCE_DATA || {};
     if (D.netWorth) renderNetWorth(D.netWorth);
@@ -69,16 +82,29 @@
 
   function renderNetWorth(s) {
     const el = document.getElementById('chart-networth');
-    if (!el || !s.dates?.length) return;
+    const usable = s.values?.filter(v => Number.isFinite(v)) || [];
+    if (!el || !s.dates?.length || !usable.length) { showEmpty(el, 'No valuatable net-worth history yet.'); return; }
+    const ccy = s.currency || 'ILS';
     new Chart(el, {
       type: 'line',
       data: {
         labels: s.dates,
         datasets: [{
-          label: 'Net worth (ILS)',
+          label: `Net worth (${ccy})`,
           data: s.values,
           borderColor: PALETTE.ink,
           backgroundColor: 'transparent',
+          spanGaps: false,
+          pointRadius: ctx => (
+            usable.length === 1 || s.coverageBreaks?.[ctx.dataIndex] ? 3 : 0
+          ),
+          segment: {
+            borderColor: ctx => (
+              s.coverageBreaks?.[ctx.p1DataIndex]
+                ? 'rgba(42, 37, 32, 0)'
+                : PALETTE.ink
+            ),
+          },
         }],
       },
       options: {
@@ -97,9 +123,9 @@
               afterBody: (ctxs) => {
                 const idx = ctxs[0].dataIndex;
                 const rows = s.breakdowns?.[idx] || [];
-                return rows.map(([name, amt]) => `${name}: ${moneyFmt(amt, 'ILS')}`);
+                return rows.map(([name, amt]) => `${name}: ${moneyFmt(amt, ccy)}`);
               },
-              footer: (ctxs) => `Total: ${moneyFmt(ctxs[0].parsed.y, 'ILS')}`,
+              footer: (ctxs) => `Total: ${moneyFmt(ctxs[0].parsed.y, ccy)}`,
             },
           },
         },
@@ -113,7 +139,8 @@
 
   function renderStocksVsSpy(s) {
     const el = document.getElementById('chart-stocks-vs-spy');
-    if (!el || !s.dates?.length) return;
+    if (!el || !s.dates?.length) { showEmpty(el, 'Benchmark needs dated investment evidence and SPY prices.'); return; }
+    const ccy = s.currency || 'ILS';
     const allDates    = s.dates;
     const allStocks   = s.stocks;
     const allSpy      = s.spy;
@@ -125,15 +152,15 @@
         labels: allDates,
         datasets: [
           { label: 'Portfolio',           data: allStocks,   borderColor: PALETTE.ink,      backgroundColor: 'transparent' },
-          { label: 'S&P 500 (if invested)', data: allSpy,    borderColor: PALETTE.mutedInk, borderDash: [4, 4], backgroundColor: 'transparent' },
-          { label: 'Cumulative deposits', data: allDeposits, borderColor: PALETTE.gold,     backgroundColor: 'transparent' },
+          { label: 'S&P 500', data: allSpy, borderColor: PALETTE.mutedInk, backgroundColor: 'transparent' },
+          { label: 'Deposits', data: allDeposits, borderColor: PALETTE.gold, backgroundColor: 'transparent' },
         ],
       },
       options: {
         responsive: true,
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${moneyFmt(ctx.parsed.y, 'USD')}` } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${moneyFmt(ctx.parsed.y, ccy)}` } },
         },
         scales: {
           x: { ...axisStyle, type: 'time', time: { unit: 'month', tooltipFormat: 'MMM yyyy', displayFormats: { month: "MMM ''yy" } } },
@@ -145,18 +172,18 @@
     const buttons = el.closest('.chart-block')?.querySelectorAll('.chart-range') || [];
     const sliceFrom = (range) => {
       if (!allDates.length) return 0;
-      const lastDate = new Date(allDates[allDates.length - 1]);
+      const lastDate = isoDate(allDates[allDates.length - 1]);
       let cutoff = null;
       if (range === '3m') {
-        cutoff = new Date(lastDate); cutoff.setMonth(cutoff.getMonth() - 3);
+        cutoff = new Date(lastDate); cutoff.setUTCMonth(cutoff.getUTCMonth() - 3);
       } else if (range === '1y') {
-        cutoff = new Date(lastDate); cutoff.setFullYear(cutoff.getFullYear() - 1);
+        cutoff = new Date(lastDate); cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 1);
       } else if (range === 'ytd') {
-        cutoff = new Date(Date.UTC(lastDate.getFullYear(), 0, 1));
+        cutoff = new Date(Date.UTC(lastDate.getUTCFullYear(), 0, 1));
       } else {
         return 0;
       }
-      const idx = allDates.findIndex(d => new Date(d) >= cutoff);
+      const idx = allDates.findIndex(d => isoDate(d) >= cutoff);
       return idx < 0 ? 0 : idx;
     };
     buttons.forEach(btn => {
@@ -175,7 +202,7 @@
 
   function renderFxDeposits(s) {
     const el = document.getElementById('chart-fx-deposits');
-    if (!el || !s.dates?.length) return;
+    if (!el || !s.dates?.length) { showEmpty(el, 'No FX history yet.'); return; }
 
     const allDates = s.dates;
     const allUsd = s.usd;
@@ -185,13 +212,13 @@
 
     const sliceFrom = (range) => {
       if (!allDates.length) return 0;
-      const lastDate = new Date(allDates[allDates.length - 1]);
+      const lastDate = isoDate(allDates[allDates.length - 1]);
       let cutoff = null;
-      if (range === '3m') { cutoff = new Date(lastDate); cutoff.setMonth(cutoff.getMonth() - 3); }
-      else if (range === '1y') { cutoff = new Date(lastDate); cutoff.setFullYear(cutoff.getFullYear() - 1); }
-      else if (range === 'ytd') { cutoff = new Date(Date.UTC(lastDate.getFullYear(), 0, 1)); }
+      if (range === '3m') { cutoff = new Date(lastDate); cutoff.setUTCMonth(cutoff.getUTCMonth() - 3); }
+      else if (range === '1y') { cutoff = new Date(lastDate); cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 1); }
+      else if (range === 'ytd') { cutoff = new Date(Date.UTC(lastDate.getUTCFullYear(), 0, 1)); }
       else return 0;
-      const idx = allDates.findIndex(d => new Date(d) >= cutoff);
+      const idx = allDates.findIndex(d => isoDate(d) >= cutoff);
       return idx < 0 ? 0 : idx;
     };
 
@@ -238,7 +265,7 @@
         const labels = [];
         const drawDots = (deposits, series, dotColor, currencyTag) => {
           deposits.forEach(d => {
-            const t = new Date(d.date).valueOf();
+            const t = isoDate(d.date).valueOf();
             if (t < xs.min || t > xs.max) return;
             const x = xs.getPixelForValue(t);
             ctx.save();
@@ -348,7 +375,7 @@
 
   function renderDividends(s) {
     const el = document.getElementById('chart-dividends');
-    if (!el || !s.months?.length || !s.series?.length) return;
+    if (!el || !s.months?.length || !s.series?.length) { showEmpty(el, 'No dividend history is available.'); return; }
 
     const ccy = s.currency || 'USD';
     const allMonths = s.months;
@@ -458,7 +485,8 @@
 
   function renderPayslips(s) {
     const el = document.getElementById('chart-payslips');
-    if (!el || !s.months?.length) return;
+    if (!el || !s.months?.length) { showEmpty(el, 'No payslips yet.'); return; }
+    const ccy = s.currency || 'ILS';
     new Chart(el, {
       type: 'line',
       data: {
@@ -472,7 +500,7 @@
         responsive: true,
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${moneyFmt(ctx.parsed.y, 'ILS')}` } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${moneyFmt(ctx.parsed.y, ccy)}` } },
         },
         scales: {
           x: axisStyle,
@@ -483,9 +511,10 @@
   }
 
   function renderExpenses(s) {
-    if (s.categories30) renderExpenseCategories(s.categories30);
-    if (s.daily30) renderExpenseDaily(s.daily30);
-    if (s.monthlyAlltime) renderExpenseMonthly(s.monthlyAlltime);
+    const ccy = s.currency || 'ILS';
+    if (s.categories30) renderExpenseCategories(s.categories30, ccy);
+    if (s.daily30) renderExpenseDaily(s.daily30, ccy);
+    if (s.monthlyAlltime) renderExpenseMonthly(s.monthlyAlltime, ccy);
   }
 
   // Shared palette for category-keyed charts. Index = position in the
@@ -506,9 +535,9 @@
   ];
   const categoryColor = (i) => CATEGORY_COLORS[i % CATEGORY_COLORS.length];
 
-  function renderExpenseCategories(cats) {
+  function renderExpenseCategories(cats, ccy) {
     const el = document.getElementById('chart-expenses-categories');
-    if (!el || !cats?.length) return;
+    if (!el || !cats?.length) { showEmpty(el, 'No consumer expenses in this period.'); return; }
     const total = cats.reduce((s, c) => s + c.total, 0);
     const fmtAmt = (v) => v.toLocaleString('en-IL', { maximumFractionDigits: 0 });
 
@@ -555,14 +584,14 @@
                 if (!txns.length) return ['(no expenses)'];
                 const max = 10;
                 const lines = txns.slice(0, max).map(([date, merchant, amt]) =>
-                  `${date} · ${merchant} — ${moneyFmt(amt, 'ILS')}`);
+                  `${date} · ${merchant} — ${moneyFmt(amt, ccy)}`);
                 if (txns.length > max) lines.push(`…and ${txns.length - max} more`);
                 return lines;
               },
               footer: (ctxs) => {
                 const row = cats[ctxs[0].dataIndex];
                 const n = row.count;
-                return `Total: ${moneyFmt(row.total, 'ILS')} · ${n} txn${n === 1 ? '' : 's'}`;
+                return `Total: ${moneyFmt(row.total, ccy)} · ${n} txn${n === 1 ? '' : 's'}`;
               },
             },
           },
@@ -583,7 +612,7 @@
               callback: function(value, index) {
                 const row = cats[index];
                 if (!row) return '';
-                return `${row.category} · ${fmtAmt(row.total)} ILS`;
+                return `${row.category} · ${fmtAmt(row.total)} ${ccy}`;
               },
             },
           },
@@ -592,12 +621,12 @@
     });
   }
 
-  function renderExpenseDaily(d) {
+  function renderExpenseDaily(d, ccy) {
     const el = document.getElementById('chart-expenses-daily');
-    if (!el || !d.dates?.length) return;
+    if (!el || !d.dates?.length || !d.totals?.some(v => v > 0)) { showEmpty(el, 'No daily consumer expenses in this period.'); return; }
 
     const datasets = [{
-      label: 'ILS',
+      label: ccy,
       data: d.totals,
       backgroundColor: PALETTE.gold,
       borderColor: PALETTE.ink,
@@ -627,11 +656,11 @@
                 if (!txns.length) return ['(no expenses)'];
                 const max = 8;
                 const lines = txns.slice(0, max).map(([merchant, cat, amt]) =>
-                  `${merchant} · ${cat} — ${moneyFmt(amt, 'ILS')}`);
+                  `${merchant} · ${cat} — ${moneyFmt(amt, ccy)}`);
                 if (txns.length > max) lines.push(`…and ${txns.length - max} more`);
                 return lines;
               },
-              footer: (ctxs) => `Total: ${moneyFmt(d.totals?.[ctxs[0].dataIndex] || 0, 'ILS')}`,
+              footer: (ctxs) => `Total: ${moneyFmt(d.totals?.[ctxs[0].dataIndex] || 0, ccy)}`,
             },
           },
         },
@@ -644,7 +673,7 @@
           },
           y: {
             ...axisStyle,
-            type: 'logarithmic',
+            beginAtZero: true,
             ticks: { ...axisStyle.ticks, callback: v => moneyFmt(v, '') },
           },
         },
@@ -652,15 +681,15 @@
     });
   }
 
-  function renderExpenseMonthly(monthly) {
+  function renderExpenseMonthly(monthly, ccy) {
     const el = document.getElementById('chart-expenses-monthly');
-    if (!el || !monthly?.length) return;
+    if (!el || !monthly?.length) { showEmpty(el, 'No monthly consumer-expense history yet.'); return; }
     new Chart(el, {
       type: 'bar',
       data: {
         labels: monthly.map(m => m.month),
         datasets: [{
-          label: 'ILS',
+          label: ccy,
           data: monthly.map(m => m.total),
           backgroundColor: PALETTE.gold,
           borderColor: PALETTE.ink,
@@ -683,9 +712,9 @@
               afterBody: (ctxs) => {
                 const row = monthly[ctxs[0].dataIndex];
                 if (!row?.top?.length) return [];
-                return row.top.map(([cat, amt]) => `${cat}: ${moneyFmt(amt, 'ILS')}`);
+                return row.top.map(([cat, amt]) => `${cat}: ${moneyFmt(amt, ccy)}`);
               },
-              footer: (ctxs) => `Total: ${moneyFmt(ctxs[0].parsed.y, 'ILS')}`,
+              footer: (ctxs) => `Total: ${moneyFmt(ctxs[0].parsed.y, ccy)}`,
             },
           },
         },

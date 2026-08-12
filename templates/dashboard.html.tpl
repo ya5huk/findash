@@ -32,6 +32,7 @@
       <summary>Net worth over time</summary>
       <div class="chart-block">
         <canvas id="chart-networth" height="120"></canvas>
+        <p class="footnote">History shows the latest continuously valuatable period after any long evidence gap. A dot after a line break marks a material snapshot-coverage change, not a proven one-week gain.</p>
       </div>
     </details>
 
@@ -86,6 +87,7 @@
           <button class="chart-range active" data-range="all">All</button>
         </div>
         <canvas id="chart-stocks-vs-spy" height="120"></canvas>
+        <p class="footnote">The comparison starts from the first valuatable investment state and applies later recorded funding. The S&amp;P 500 line uses SPY closing prices; dividends are excluded.</p>
       </div>
     </details>
 
@@ -101,7 +103,7 @@
       {{DIVIDENDS_YEARLY_SUMMARY}}
       <div class="row-charts">
         <div class="row-half">
-          <p class="chart-title">Last received</p>
+          <p class="chart-title">Modeled history</p>
           {{DIVIDENDS_RECENT_5_TABLE}}
           <details class="dividend-history">
             <summary>show 1 year back</summary>
@@ -113,13 +115,17 @@
           {{DIVIDENDS_UPCOMING_TABLE}}
         </div>
       </div>
+      <details class="dividend-history">
+        <summary>recorded cash</summary>
+        {{DIVIDENDS_RECORDED_TABLE}}
+      </details>
       <div class="chart-block">
         <div class="chart-toolbar">
           <button class="chart-range active" data-range="1y">1Y</button>
           <button class="chart-range" data-range="all">All</button>
         </div>
         <canvas id="chart-dividends" height="120"></canvas>
-        <p class="footnote">Live Yahoo dividend events for held positions (shares held on each ex-date), net of 25% Israeli withholding. Bars show dividends received per month (per quarter in the All view) in USD, stacked by payer (top 5 + Other) — hover for the per-stock breakdown. <em>absorbed</em> = already folded into a brokerage cash snapshot; <em>recorded</em> <strong>✓</strong> = itemized from a statement.</p>
+        <p class="footnote">{{DIVIDENDS_FOOTNOTE}}</p>
       </div>
     </details>
 
@@ -133,7 +139,7 @@
           <button class="chart-range" data-range="all">All</button>
         </div>
         <canvas id="chart-fx-deposits" height="140"></canvas>
-        <p class="footnote">USD→ILS and GBP→ILS from Yahoo Finance. Your deposits (when you bought that currency) marked on the matching line.</p>
+        <p class="footnote">USD→ILS and GBP→ILS reference rates. Positive external brokerage funding is marked on the matching currency line.</p>
       </div>
       {{DEPOSITS_TABLE}}
     </details>

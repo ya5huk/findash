@@ -1,8 +1,10 @@
 # Setup
 
-FinDash is a Claude Code plugin (named `findash`). The repo contains the plugin manifest in `.claude-plugin/` and the skills in `skills/`; those skills orchestrate local scripts, Google Drive, SQLite, and optional Telegram delivery.
+FinDash is a Claude Code plugin (named `findash`). Its skills sync financial evidence into SQLite and optionally send a deterministic Telegram snapshot; a separate localhost React app provides the live dashboard.
 
-The minimal setup is Claude Code + Python + SQLite + rclone + a Google Drive vault. Telegram and automatic bank fetching are optional.
+The minimal local setup is Claude Code + Python (including its built-in SQLite
+module). Google Drive/rclone adds manual-document intake and archival database
+backups, but it is optional. Telegram and automatic bank fetching are optional too.
 
 ## 1. Install Claude Code and load the plugin
 
@@ -23,50 +25,67 @@ claude --plugin-dir .
 
 ```text
 /findash:setup
-/findash:daily-run
 /findash:findash-doctor
 /findash:sync-finance-data
-/findash:render-finance-dashboard
+/findash:send-finance-dashboard
 /findash:fetch-bank-data
 /findash:fetch-investments
 ```
 
-`/findash:setup` is the guided path for a first-time setup; it auto-fixes the safe pieces and walks you through the rest. `/findash:daily-run` runs the whole flow once everything is configured.
+`/findash:setup` is the guided path. `/findash:sync-finance-data` runs every configured source and ingests it without rendering or delivery.
 
-Others can install the plugin without cloning. From any Claude Code session:
-
-```text
-/plugin marketplace add ya5huk/findash
-/plugin install findash@findash
-```
+FinDash currently requires a local checkout because its private state and
+mechanical scripts are rooted beside the repository. Do not install it as a
+standalone marketplace plugin yet; clone it and launch with `--plugin-dir .` as
+shown above.
 
 ## 2. Install local tools
 
-Required for the core sync/render flow:
+Required for the core sync and dashboard flows:
 
 ```bash
 python3 --version
-sqlite3 --version
+node --version
+```
+
+Python 3.10 or newer and Node 22.13 or newer are required. Install the locked React dependencies once:
+
+```bash
+scripts/install_dashboard_deps.sh
+```
+
+Required only for the optional Drive vault and backup:
+
+```bash
 rclone version
 ```
 
-Usually needed:
+Required only for password-protected payslip PDFs:
 
 ```bash
 qpdf --version
 ```
 
-`qpdf` is only required for password-protected payslip PDFs.
+Automatic bank/card fetching uses the same Node minimum plus its separate `scripts/install_node_deps.sh` bundle.
 
-Required only for automatic bank/card fetching:
+Before configuring any optional integration, create the single local secrets
+file with user-only permissions. A fresh clone does not contain this gitignored
+file:
 
 ```bash
-node --version
+mkdir -p .secrets
+chmod 700 .secrets
+touch .secrets/findash
+chmod 600 .secrets/findash
 ```
 
-The scraper wrapper needs Node `>=22.13.0`.
+Section 5 shows the sections you can add. Creating the empty private file here
+means the optional Drive steps below can write their configuration in order.
 
-## 3. Connect Google Drive with rclone
+## 3. Optional: connect Google Drive with rclone
+
+Skip this section if you do not want Drive-based document intake or archival
+backups. The full sync and local dashboard still work; Drive operations warn and continue.
 
 Create a Google Drive folder for the vault, for example `finance-vault`. Its contents should follow [docs/drive-layout.md](./drive-layout.md).
 
@@ -83,12 +102,17 @@ During setup:
 - Use a scope that can read, write, move, and delete files in the vault.
 - Complete the browser OAuth flow.
 
-FinDash expects a project-local config file:
+FinDash expects a project-local config file. Copy rclone's default config with
+the fixed helper; it preserves the original, refuses symlinks/overwrites, and
+creates the project copy at mode 600:
 
 ```bash
-cp ~/.config/rclone/rclone.conf ./rclone.conf
-chmod 600 ./rclone.conf
+python3 scripts/adopt_rclone_config.py
 ```
+
+If you configured a non-default rclone path, copy that file manually to
+`./rclone.conf` and run `chmod 600 ./rclone.conf`; the helper intentionally does
+not search arbitrary locations.
 
 Get the Drive folder ID from the vault URL:
 
@@ -96,19 +120,26 @@ Get the Drive folder ID from the vault URL:
 https://drive.google.com/drive/folders/<THIS_PART_IS_THE_ID>
 ```
 
-Put it in the `[drive]` section of `.secrets/findash` (the single secrets file, created in [section 5](#5-create-local-secrets)):
+Put it in the `[drive]` section of `.secrets/findash` (the private file created
+above; [section 5](#5-fill-in-local-secrets) shows the complete optional layout):
 
 ```ini
 [drive]
 root_folder_id=<Drive folder ID>
 ```
 
-Test access (reads the ID from `.secrets/findash`):
+Test private connectivity, then create or validate the fixed vault folders
+through the wrapper. Both commands read the ID internally and never list or
+print private filenames:
 
 ```bash
-ROOT_ID="$(sed -n '/^\[drive\]/,/^\[/{s/^root_folder_id=//p;}' .secrets/findash)"
-rclone --config ./rclone.conf --drive-root-folder-id "$ROOT_ID" lsf gdrive:
+scripts/drive.sh probe
+scripts/drive.sh ensure-layout
 ```
+
+`ensure-layout` is idempotent: it creates any missing public folder from the
+committed Drive layout and leaves existing folders alone. The setup doctor runs
+the same two checks whenever Drive is fully configured.
 
 For deeper rclone details, see [rclone's Google Drive docs](https://rclone.org/drive/).
 
@@ -121,10 +152,18 @@ python3 scripts/bundle-assets.py
 ```
 
 This writes gitignored files under `templates/vendor/`.
+Verify an existing bundle without network access or changes:
 
-## 5. Create local secrets
+```bash
+python3 scripts/bundle-assets.py --check
+```
 
-All credentials live in a single INI file, `.secrets/findash`, with one section per integration. Only the `[drive]` section is required for the core Drive workflow; omit any section you don't use:
+## 5. Fill in local secrets
+
+All credentials live in a single INI file, `.secrets/findash`, with one section
+per integration. No integration section is required universally; add `[drive]`
+only if you enabled the optional Drive workflow, and omit anything you do not
+use:
 
 ```ini
 # .secrets/findash — chmod 600. Omit any section you don't use.
@@ -147,25 +186,37 @@ chat_id=<your numeric id, from @userinfobot>
 <payslip-filename-pattern>=<password>
 ```
 
-Keep it local and locked down:
+After editing it, re-assert the private directory and file modes:
 
 ```bash
-mkdir -p .secrets
+chmod 700 .secrets
 chmod 600 .secrets/findash
 ```
 
-`rclone.conf` is **not** part of this file — it stays a separate file because it is rclone's own OAuth config, passed via `--config ./rclone.conf` (see [section 3](#3-connect-google-drive-with-rclone)).
+FinDash keeps all local financial state user-only. Run the deterministic mode
+check after setup or after copying local data from elsewhere:
+
+```bash
+python3 scripts/harden_permissions.py
+```
+
+`rclone.conf` is **not** part of this file — when Drive is enabled, it stays a
+separate file because it is rclone's own OAuth config, passed via `--config
+./rclone.conf` (see [section 3](#3-optional-connect-google-drive-with-rclone)).
 
 ## 6. Initialize the database
 
 The doctor skill can create the database for you. Manually:
 
 ```bash
-mkdir -p data inbox output
-sqlite3 data/finance.db < scripts/init-db.sql
+python3 scripts/harden_permissions.py
+python3 scripts/migrate_db.py --init
 ```
 
-`data/finance.db` is gitignored. Sync uploads the current DB snapshot back to the Drive vault.
+The same command without `--init` upgrades an existing database.
+`data/finance.db` is gitignored. When Drive is configured, sync also uploads a
+consistent archival snapshot there; the local database remains the source of
+truth either way.
 
 ## 7. Run the setup doctor
 
@@ -175,30 +226,37 @@ From Claude Code:
 /findash:findash-doctor
 ```
 
-It checks binaries, local directories, rclone config, Drive credentials, vendor assets, SQLite, optional Telegram secrets, optional bank secrets, and browser profiles. (`/findash:setup` runs the same checks as part of the guided onboarding.)
+It checks the local runtime, directories, vendor assets, and SQLite, then reports
+rclone/Drive, Telegram, bank sources, and browser profiles as feature-gated
+optional checks. (`/findash:setup` runs the same checks as part of the guided
+onboarding.)
 
-## 8. First sync and render
+## 8. First sync and dashboard
 
-Drop source documents into the Drive vault's `dump/` folder. They can be PDFs, XLSX exports, or screenshots — `dump/` is yours alone; the automatic bank fetch stages its files locally, not in Drive.
+If you enabled Drive, drop source documents into the vault's `dump/` folder.
+They can be PDFs, XLSX exports, or screenshots — `dump/` is yours alone. Bank
+fetching and supported live feeds stage or ingest their data locally and do not
+require Drive.
 
-Then run the whole flow with one command:
-
-```text
-/findash:daily-run
-```
-
-It fetches, syncs, renders, and delivers to Telegram. To run the steps by hand instead:
+Run the complete data update:
 
 ```text
 /findash:sync-finance-data
-/findash:render-finance-dashboard
 ```
 
-`/findash:sync-finance-data` lets Claude inspect and classify documents, insert rows into SQLite, and back up the DB. `/findash:render-finance-dashboard` renders `output/dashboard.html` and sends it to Telegram if Telegram is configured.
+It fetches bank/card data, attempts IBKR, gathers Drive drops, ingests/reconciles SQLite, refreshes market references, and performs the gated backup. It does not render or send.
+
+Run the live dashboard independently:
+
+```bash
+./run_dashboard.sh
+```
+
+Open `http://127.0.0.1:4173`. The private local server refreshes stored stock and FX observations every 30 minutes while it runs; the browser only reads its JSON snapshot.
 
 ## Telegram Optional
 
-Telegram delivery sends the rendered dashboard as an HTML attachment. Without Telegram, `/findash:render-finance-dashboard` still writes `output/dashboard.html`.
+Telegram delivery is an explicit output action. `/findash:send-finance-dashboard` renders `output/dashboard.html` from the stored cache, then sends it as an attachment.
 
 Create a bot:
 
@@ -216,17 +274,19 @@ bot_token=<from @BotFather>
 chat_id=<your numeric id, from @userinfobot>
 ```
 
-Test after rendering:
+Test the complete render-and-send flow:
 
-```bash
-scripts/send_telegram.sh
+```text
+/findash:send-finance-dashboard
 ```
 
 Telegram's own bot walkthrough is here: [From BotFather to Hello World](https://core.telegram.org/bots/tutorial).
 
 ## Automatic Bank Fetch Optional
 
-You do not need automatic fetching to use FinDash. You can manually export statements or screenshots and drop them into Drive `dump/`.
+You do not need automatic fetching to use FinDash. If you enabled the optional
+Drive workflow, you can instead export statements or screenshots and drop them
+into Drive `dump/`.
 
 Automatic fetching uses `israeli-bank-scrapers` through `scripts/fetch_bank.js`. Currently wired sources:
 
@@ -236,9 +296,7 @@ Automatic fetching uses `israeli-bank-scrapers` through `scripts/fetch_bank.js`.
 Install dependencies:
 
 ```bash
-cd scripts
-npm install
-cd ..
+scripts/install_node_deps.sh
 ```
 
 Add a `[hapoalim]` section to `.secrets/findash` if you use Hapoalim:
@@ -271,6 +329,10 @@ OTP/CAPTCHA, approve or trust the device if the site offers it, and wait for the
 account/dashboard page. Then return to the terminal and press Enter so Chromium
 closes cleanly and the profile is flushed to disk.
 
+Chromium's sandbox stays enabled by default. If you are running as root inside a
+trusted, isolated container where Chromium refuses to start, you may append
+`--disable-browser-sandbox`; do not use that flag on a normal workstation or server.
+
 Then Claude can run:
 
 ```text
@@ -280,13 +342,13 @@ Then Claude can run:
 If one source is not configured, the skill skips it. If the bank sends an OTP
 or CAPTCHA during a later unattended run, the fetch step is expected to fail
 best-effort; rerun the relevant `--setup` command to refresh the trusted-device
-profile, then rerun the daily flow.
+profile, then rerun the full sync.
 
 ## Interactive Brokers (IBKR) Portfolio Optional
 
-You do not need IBKR to use FinDash. If you have an Interactive Brokers account, `fetch-investments` pulls your IBKR **trade history** straight into SQLite — mapped onto a findash account you choose — so holdings, cost basis, and the stocks-vs-S&P benchmark stay current without screenshots. It also writes a positions snapshot for reconciliation, and pulls cash balances.
+You do not need IBKR to use FinDash. If you have an Interactive Brokers account, `fetch-investments` pulls your IBKR **trade history** straight into SQLite and attaches it as a feed to the logical brokerage it describes. A wrapper statement and the underlying IBKR feed therefore do not become two assets. It also writes position and cash observations for reconciliation.
 
-IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive Brokers connector** from Claude's own connector directory. The connector authenticates solely in a hands-on Claude session, so while `daily-run` attempts `fetch-investments` best-effort, unattended runs skip it with a warning — run it by hand (then re-render) for fresh holdings. There's **no password** in `.secrets/findash`; you log in to IBKR through Claude's connector flow.
+IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive Brokers connector** from Claude's own connector directory. `sync-finance-data` attempts it best-effort; interactive syncs can authenticate, while unattended syncs skip with a warning. There's **no password** in `.secrets/findash`.
 
 1. **Add the IBKR connector once (needs a browser).** In Claude:
 
@@ -316,7 +378,7 @@ IBKR is **not** a findash MCP server. It uses Anthropic's official **Interactive
    /findash:fetch-investments
    ```
 
-   It ingests your IBKR trades onto the mapped account (deduped by trade id), writes a reconciliation positions snapshot + cash, then pushes the DB to Drive; re-render to see it. The skill is **read-only** — if Claude prompts for any tool that places an order or moves funds, deny it. If the connector isn't connected, the skill just skips. See [docs/live-sources.md](./live-sources.md) for how the data maps into SQLite.
+   It ingests your IBKR trades onto the mapped account (deduped by trade id) and writes reconciliation position/cash evidence. The connector use is **read-only** — if Claude prompts for any tool that places an order or moves funds, deny it. If the connector isn't connected, the skill skips. See [docs/live-sources.md](./live-sources.md).
 
 ## Payslip Passwords Optional
 
@@ -334,40 +396,62 @@ Example:
 *-payroll.pdf=<password>
 ```
 
-## Daily Run Optional
+## Daily Sync Optional
 
-After the interactive flow works, the daily wrapper can run the whole flow
-unattended. `scripts/run_daily.sh` loads the plugin and runs the `/findash:daily-run`
-skill via `claude -p` (internally `claude --plugin-dir "$REPO_ROOT" -p "/findash:daily-run"`),
-retrying once after 60s if the first attempt fails.
+After the interactive flow works, the daily wrapper can update data unattended.
+`scripts/run_sync.sh` loads the plugin and runs `/findash:sync-finance-data`
+via `claude -p`,
+retrying once after 120s if the first attempt fails. Each attempt has a 30-minute
+timeout by default, and an atomic per-checkout lock prevents overlapping runs.
+Override the timeout with `FINDASH_ATTEMPT_TIMEOUT_SECONDS` (60–7200) if needed.
 
-`claude -p` cannot ask for approvals while running from cron. Keep broad,
-machine-specific permissions in `.claude/settings.local.json` (gitignored), not
-in public docs or committed settings. If a manual wrapper test says commands
-like `rclone`, `sqlite3`, `python3`, or `curl` require approval, copy the
-working allowlist from a trusted local checkout or create a local settings file
-that allows those commands for this project.
+The wrapper never renders or contacts Telegram. Run the React app or invoke the Telegram skill separately.
+
+`claude -p` cannot ask for approvals while running from cron. The committed
+settings allow only the repository's fixed-path wrappers; they intentionally do
+not allow raw `rclone`, `sqlite3`, `qpdf`, `rm`, or arbitrary Python. Do not add
+those broad prefixes to public settings. If your Claude installation still asks
+about a trusted repository script during a manual wrapper test, approve that
+specific script in `.claude/settings.local.json` (gitignored).
 
 Before scheduling it, verify:
 
-- `rclone.conf`, the `[drive]` section of `.secrets/findash`, and
-  `data/finance.db` are present.
-- Telegram is configured if you expect a Telegram attachment.
-- `templates/vendor/` exists from `python3 scripts/bundle-assets.py`.
-- `scripts/node_modules/` exists from `cd scripts && npm install`.
-- `.claude/settings.local.json` exists locally with unattended permissions for
-  the mechanical commands used by the flow.
+- `data/finance.db` is present.
+- If you expect Drive intake/backups, `rclone.conf` and the `[drive]` section of
+  `.secrets/findash` are present; otherwise their doctor warnings are expected.
+- If a bank/card source is configured, `scripts/node_modules/` exists from
+  `scripts/install_node_deps.sh`.
+- A manual wrapper test completes without approval prompts; keep any necessary
+  machine-specific script approvals in `.claude/settings.local.json`.
 - For every configured bank/card source, the matching `--setup` command above
   has completed at least once.
 
 (IBKR needs no setup here — its connector can't authenticate unattended, so the
-daily run's best-effort IBKR step will just skip with a warning; see the IBKR
+daily sync's best-effort IBKR step will just skip with a warning; see the IBKR
 section above.)
 
 Test the exact wrapper manually:
 
 ```bash
-CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
+CLAUDE_BIN="$(command -v claude)" scripts/run_sync.sh
 ```
 
-It runs fetch best-effort, then sync, then render. Fetch failures are reported but do not block sync/render. (IBKR is not part of this unattended flow — it's a separate interactive step; see the IBKR section above.)
+It fetches configured sources, attempts an already-onboarded IBKR connection best-effort, ingests, refreshes reference data, and backs up when due. The wrapper requires a structured sync-completion marker.
+
+### macOS LaunchAgent
+
+The repository includes a 10:00 local-time LaunchAgent template. From the repo
+root, render it safely for the current checkout and the executables currently on
+your `PATH`:
+
+```bash
+python3 scripts/install_launch_agent.py
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.findash.daily.plist"
+```
+
+The installer uses XML-safe serialization, includes the active nvm/Homebrew
+binary directories when present, and creates the plist and log directories with
+private permissions. It does not load or restart the job. To choose another
+local schedule, pass `--hour 8 --minute 30`, then boot out and bootstrap the job
+again. The template sets umask 077, so its dashboard, staging artifacts,
+captures, and log are readable only by the current user.

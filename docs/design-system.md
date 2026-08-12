@@ -1,6 +1,6 @@
 # Design system — the booky dashboard
 
-The dashboard should feel like a leather-bound ledger or a page from a finance manual at an old library: serif type, parchment background, hairline rules, generous whitespace, oldstyle figures. Luxurious by restraint, not by ornament.
+Both the React dashboard and Telegram HTML snapshot should feel like a leather-bound ledger or a page from a finance manual at an old library: serif type, parchment background, hairline rules, generous whitespace, oldstyle figures. Luxurious by restraint, not by ornament.
 
 ## Principles
 
@@ -60,7 +60,7 @@ Style the summary so it looks like a heading; no chevron rotation animation; min
 - No grid lines (or very faint: `rgba(201, 191, 170, 0.4)`).
 - No legend background, no border.
 - Serif font on axes and tooltips: `EB Garamond`.
-- Line charts: 1.5px lines in ink color; the benchmark (S&P 500) in muted ink dashed; deposits cumulative line in faded gold.
+- Line charts: 1.5px lines in ink color; the price-only S&P 500 what-if in muted ink dashed; recorded net funding in faded gold.
 - Hover tooltip: parchment background, ink text, hairline border, no shadow.
 - Y-axis ticks are sparse; date axis is in compact format ("Apr '26").
 - No data point markers unless a single point is being highlighted.

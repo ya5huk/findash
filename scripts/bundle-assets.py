@@ -7,14 +7,23 @@ the same files. Safe to interrupt — files are written only after each
 fetch fully succeeds.
 
 Usage:
-    python3 scripts/bundle-assets.py
+    python3 scripts/bundle-assets.py [--check]
 """
 
+import argparse
 import base64
+import hashlib
+import os
 import re
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from findash_core import assets
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_DIR = PROJECT_ROOT / "templates" / "vendor"
@@ -77,9 +86,31 @@ def kb(n):
     return f"{n / 1024:.1f} KB"
 
 
+def write_verified(dest, data):
+    expected = assets.EXPECTED_SHA256[dest.name]
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"integrity check failed for {dest.name}: expected {expected}, got {actual}"
+        )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, dest)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def vendor_js(url, dest):
     data = fetch(url)
-    dest.write_bytes(data)
+    write_verified(dest, data)
     print(f"  {dest.name}  {kb(len(data))}")
 
 
@@ -105,20 +136,43 @@ def vendor_fonts(css_url, dest):
         return f"url({cache[font_url]})"
 
     inlined = FONT_URL_PATTERN.sub(repl, css)
-    dest.write_text(inlined, encoding="utf-8")
-    size = len(inlined.encode("utf-8"))
+    data = inlined.encode("utf-8")
+    write_verified(dest, data)
+    size = len(data)
     print(
         f"  {dest.name}  {kb(size)}  "
         f"(embedded {total_fonts} fonts, {kb(total_bytes)} raw)"
     )
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify existing assets without downloading or changing files",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.check:
+        try:
+            assets.require_vendor_assets(VENDOR_DIR)
+        except assets.AssetIntegrityError as exc:
+            print(f"Vendor assets: not ready ({exc})", file=sys.stderr)
+            return 1
+        print(f"Vendor assets: verified ({len(assets.EXPECTED_SHA256)})")
+        return 0
+    if VENDOR_DIR.parent.is_symlink() or VENDOR_DIR.is_symlink():
+        raise ValueError("templates and templates/vendor must not be symlinks")
     VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Vendoring offline assets into {VENDOR_DIR.relative_to(PROJECT_ROOT)}/")
     vendor_js(CHART_JS_URL, VENDOR_DIR / "chart.umd.min.js")
     vendor_js(ADAPTER_JS_URL, VENDOR_DIR / "chartjs-adapter-date-fns.bundle.min.js")
     vendor_fonts(FONTS_CSS_URL, VENDOR_DIR / "fonts-inline.css")
+    assets.require_vendor_assets(VENDOR_DIR)
     print("Done.")
     return 0
 

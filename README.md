@@ -7,7 +7,7 @@ A Claude Code plugin for turning personal finance documents into an accurate SQL
 </p>
 
 <p align="center">
-  <img alt="Static HTML" src="https://img.shields.io/badge/output-static%20HTML-9b1c1f?style=for-the-badge">
+  <img alt="React dashboard" src="https://img.shields.io/badge/output-live%20React-9b1c1f?style=for-the-badge">
   <img alt="SQLite" src="https://img.shields.io/badge/store-SQLite-2f5d3a?style=for-the-badge">
   <img alt="Drive first" src="https://img.shields.io/badge/source-Google%20Drive-b49b4a?style=for-the-badge">
   <img alt="Privacy first" src="https://img.shields.io/badge/privacy-local%20secrets-2a211d?style=for-the-badge">
@@ -17,12 +17,15 @@ A Claude Code plugin for turning personal finance documents into an accurate SQL
 FinDash is a Claude Code plugin (`findash`) bundling a set of skills plus a small deterministic toolchain:
 
 - **Skills reason** over messy real-world records — bank statements, payslips, brokerage screenshots, deposits, transfers, card charges.
-- **Scripts do the mechanics** — parse files, update SQLite, fetch prices, render HTML, send to Telegram.
+- **Scripts do the mechanics** — parse files, update SQLite, cache market observations, serve React, and optionally send HTML to Telegram.
 
-The core loop: drop source documents in a Google Drive vault → ask Claude to sync them into SQLite → render a self-contained dashboard. Telegram delivery and automatic bank/card fetch are both optional; the dashboard is always written locally as HTML.
+The core loop is deliberately split: collect and normalize every configured
+source into SQLite, then choose an output. The local React app reads SQLite and
+refreshes stock/FX observations every 30 minutes; Telegram delivery renders a
+deterministic self-contained HTML snapshot only when requested.
 
 > [!NOTE]
-> **Built for Israel.** FinDash ships tuned for Israeli personal finance: automatic fetch covers **Bank Hapoalim** and **Cal** (via `israeli-bank-scrapers`), money reports in **₪ (ILS)**, the dashboard applies the **25% Israeli capital-gains tax** to securities profit, and the schema models Israeli **payslips** (income tax, Bituach Leumi) and **retirement vehicles** (pension + training fund / קרן השתלמות). Dates parse as **DD/MM** and Hebrew/RTL text is handled throughout. Many docs, prompts, and examples assume this locale.
+> **Built for Israel.** FinDash ships tuned for Israeli personal finance: automatic fetch covers **Bank Hapoalim** and **Cal** (via `israeli-bank-scrapers`), the default reporting currency is **₪ (ILS)**, and the schema models Israeli **payslips** (income tax, Bituach Leumi) and **retirement vehicles** (pension + training fund / קרן השתלמות). Dates parse as **DD/MM** and Hebrew/RTL text is handled throughout. The cash-flow dividend component uses gross modeled entitlement while cash confirmation is incomplete; modeled rows never enter the ledger, and recorded dividend cash and tax remain source-backed facts.
 >
 > **Living elsewhere?** Nothing is locked in — fork it and swap the locale-specific pieces. See [Adapting to another country](#adapting-to-another-country).
 
@@ -39,7 +42,7 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
   </tr>
   <tr>
     <td><strong>Net worth over time</strong><br>Cash, locked savings, pension, training fund, and brokerage value roll into one view.</td>
-    <td><strong>Investment benchmark</strong><br>Brokerage performance is compared with cumulative deposits and an S&P 500 what-if line.</td>
+    <td><strong>Investment benchmark</strong><br>Brokerage value is compared with recorded signed funding and a price-only S&amp;P 500 what-if seeded from the first valuatable portfolio state.</td>
   </tr>
 </table>
 
@@ -83,7 +86,7 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
     </td>
   </tr>
   <tr>
-    <td><strong>Sectioned dashboard</strong><br>Overview, expenses, stocks, payslips, and SQLite data stay separated for quick scanning.</td>
+    <td><strong>Sectioned dashboard</strong><br>Overview, expenses, stocks, payslips, and privacy-safe database diagnostics stay separated for quick scanning.</td>
     <td><strong>Brokerage deposits</strong><br>Deposit timing is shown against USD/ILS and GBP/ILS movement.</td>
   </tr>
 </table>
@@ -112,34 +115,34 @@ The core loop: drop source documents in a Google Drive vault → ask Claude to s
                                 |     +-------------------+
                                 v     v
                      +----------------------+
-                     | SQLite (truth)       |----> weekly backup
+                     | SQLite (truth)       |----> weekly consistent snapshot
                      | deterministic math   |      to Drive (best-effort)
                      +----------+-----------+
                                 |
-                                v
-                     +----------------------+
-                     | render dashboard     |
-                     | HTML + Telegram      |
-                     | (+ ⚠️ warnings)      |
-                     +----------------------+
+                    +-----------+------------+
+                    |                        |
+                    v                        v
+          +--------------------+   +----------------------+
+          | React localhost app|   | send-finance-dashboard|
+          | live quotes / 30m  |   | HTML → Telegram      |
+          +--------------------+   +----------------------+
 ```
 
-`fetch-bank-data` stages fresh bank data locally — it never writes to Drive; Drive is your territory (manual drops) plus the weekly database backup. `sync-finance-data` pulls new Drive drops into staging (best-effort — Drive being down just becomes a `⚠️` Telegram warning), reasons through everything staged, inserts rows with source links into SQLite, deletes staged files after commit, and files your `dump/` drops into their vault folders. `render-finance-dashboard` reads SQLite, fetches live prices/FX, fills the template, and writes one portable HTML file.
+`sync-finance-data` owns the full update: bank/card fetch, best-effort IBKR, Drive gathering, staged ingestion, reconciliation, market-cache refresh, Drive filing, and the gated backup. It never renders or sends. `./run_dashboard.sh` runs the private localhost React view and appends current stock/FX observations to SQLite every 30 minutes. `send-finance-dashboard` reads the stored cache without refreshing it, writes one portable HTML file, and sends it plus the pending summary through Telegram.
 
-The dashboard is self-contained: CSS, fonts, Chart.js, chart data, and markup are inlined into `output/dashboard.html`.
+The Telegram artifact remains self-contained: CSS, fonts, Chart.js, chart data, and markup are inlined into `output/dashboard.html`.
 
 ## The Skills
 
-FinDash is operated through the plugin's namespaced skills. The two new entry points wrap the rest, so most days you only run one:
+FinDash keeps data updates and output independent:
 
 | Skill | Required? | What it does |
 |---|---:|---|
-| `/findash:daily-run` | Entry point | Runs the whole morning flow end-to-end: fetch → IBKR (best-effort) → sync → render → deliver to Telegram. This is what the cron wrapper invokes. |
 | `/findash:setup` | Entry point | Guided first-time onboarding: auto-fixes the safe pieces and walks you through the rest. |
-| `/findash:sync-finance-data` | Yes | Gathers new Drive drops into local staging (best-effort), applies Claude's judgment to everything staged, writes audited rows into SQLite, and backs the database up to Drive weekly. |
-| `/findash:render-finance-dashboard` | Yes | Renders `output/dashboard.html` from SQLite and optionally sends it to Telegram. |
+| `/findash:sync-finance-data` | Yes | Runs every configured source, ingests/reconciles SQLite, refreshes reference data, and attempts the weekly backup. No rendering or delivery. |
+| `/findash:send-finance-dashboard` | Optional | Deterministically renders `output/dashboard.html` from cached SQLite state and sends it to Telegram. |
 | `/findash:fetch-bank-data` | Optional | Uses `israeli-bank-scrapers` to pull fresh Hapoalim and Cal data into local staging for sync. |
-| `/findash:fetch-investments` | Optional | Ingests your Interactive Brokers trade history (plus a reconcile snapshot) into SQLite via the official IBKR connector. Attempted best-effort in the daily run; the connector authenticates only in hands-on sessions, so unattended runs skip it with a warning. |
+| `/findash:fetch-investments` | Optional | Ingests IBKR trade history plus a reconciliation snapshot. The full sync attempts it best-effort; unattended syncs normally skip interactive auth. |
 | `/findash:findash-doctor` | Recommended | Audits local setup and auto-fixes safe missing pieces. |
 
 Skills live in [`skills/`](skills) and the plugin manifest in [`.claude-plugin/`](.claude-plugin). Claude Code loads them when you run `claude --plugin-dir .` from the repo root.
@@ -181,9 +184,11 @@ When you run the Claude skills, Claude reads the documents needed for the task. 
 
 ```text
 .claude-plugin/       plugin + marketplace manifests
-skills/               plugin skills: daily-run, setup, fetch, sync, render, doctor
+skills/               plugin skills: setup, fetch, sync, Telegram send, doctor
+dashboard/            React/Vite localhost dashboard
 docs/                 project docs: schema, Drive layout, source document types
-scripts/              mechanical parsers, scrapers, renderers, daily runner
+scripts/findash_core/ normalized accounting, cash-flow, migration, and HTML modules
+scripts/              gateways, parsers, scrapers, API, renderer, sync runner
 templates/            dashboard shell, CSS, and chart code
 .secrets/findash      single local INI of credentials, gitignored
 data/                 local SQLite database, gitignored
@@ -198,12 +203,13 @@ For the full setup, read [docs/setup.md](docs/setup.md). The short version:
 1. Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) and the local tools:
 
 ```bash
-qpdf --version          # payslip PDFs
-rclone version          # Drive sync
-node --version          # bank fetch, needs >=22.13.0
-python3 --version
-sqlite3 --version
+python3 --version       # required, >=3.10
+rclone version          # Drive sync (optional when using bank-only/local input)
+qpdf --version          # password-protected payslips only
+node --version          # React dashboard and automatic bank fetch, >=22.13.0
 ```
+
+Python 3.10 or newer is required.
 
 2. Clone this repo and load the plugin from its root:
 
@@ -219,20 +225,26 @@ claude --plugin-dir .
 /findash:setup
 ```
 
-4. Create `.secrets/findash` (chmod 600) from the single block in [Privacy Model](#privacy-model). Omit any section you don't use. `rclone.conf` stays separate; see [Drive + rclone setup](docs/setup.md#3-connect-google-drive-with-rclone) and [Drive layout](docs/drive-layout.md).
+4. Create `.secrets/findash` (chmod 600) from the single block in [Privacy Model](#privacy-model). Omit any section you don't use. `rclone.conf` stays separate; see [Drive + rclone setup](docs/setup.md#3-optional-connect-google-drive-with-rclone) and [Drive layout](docs/drive-layout.md).
 
-5. Run the whole flow with one command:
+5. Sync every configured source:
 
 ```text
-/findash:daily-run
+/findash:sync-finance-data
 ```
 
-This fetches, syncs, renders, and delivers to Telegram. To run pieces by hand, use `/findash:fetch-bank-data`, `/findash:fetch-investments`, `/findash:sync-finance-data`, and `/findash:render-finance-dashboard`.
-
-For unattended (cron/launchd) daily runs, schedule the wrapper — it loads the plugin and runs `/findash:daily-run`:
+Then choose an output independently:
 
 ```bash
-CLAUDE_BIN="$(command -v claude)" scripts/run_daily.sh
+./run_dashboard.sh
+```
+
+The app opens at `http://127.0.0.1:4173`. Invoke `/findash:send-finance-dashboard` only when you want a Telegram snapshot.
+
+For unattended daily syncs, schedule the wrapper — it loads the plugin and runs `/findash:sync-finance-data`:
+
+```bash
+CLAUDE_BIN="$(command -v claude)" scripts/run_sync.sh
 ```
 
 If you want unattended runs to fetch from Hapoalim or Cal, seed the browser profiles once before scheduling:
@@ -248,21 +260,19 @@ sends an OTP during a later unattended run, rerun the matching `--setup`
 command; the run will continue with stale fetched data until the profile is
 refreshed.
 
-### Install as a plugin (for others)
+### Local checkout required
 
-You don't have to clone to use FinDash. From any Claude Code session:
-
-```text
-/plugin marketplace add ya5huk/findash
-/plugin install findash@findash
-```
+FinDash is packaged as a namespaced Claude Code plugin, but currently requires a
+local checkout because scripts, templates, and private runtime state are rooted
+beside the repository. Clone it and launch `claude --plugin-dir .`; standalone
+marketplace installation is not supported yet.
 
 ## Optional Integrations
 
-- Telegram: sends `output/dashboard.html` as a bot attachment. Without Telegram, rendering still writes the local dashboard. See [Telegram setup](docs/setup.md#telegram-optional).
+- Telegram: `/findash:send-finance-dashboard` renders and sends `output/dashboard.html` only when requested. See [Telegram setup](docs/setup.md#telegram-optional).
 - Automatic bank/card fetch: pulls Hapoalim and Cal data through `israeli-bank-scrapers`. Unattended fetch requires a one-time interactive `--setup` per source to seed trusted-device cookies. Without it, manually upload statements or exports into Drive `dump/`. See [Bank fetch setup](docs/setup.md#automatic-bank-fetch-optional).
 - Password-protected payslips: requires `qpdf` and a `[pdf-passwords]` section in `.secrets/findash`. Without it, skip payslip PDFs or add the passwords later.
-- Interactive Brokers: ingests your IBKR **trade history** onto a mapped account (so you stop screenshotting trades), plus a reconciliation snapshot, via Anthropic's official **IBKR connector** — added through Claude's connector directory, not findash config. The daily run attempts it best-effort; the connector authenticates only in hands-on sessions, so unattended runs skip it with a warning — run `/findash:fetch-investments` by hand (then re-render) for fresh holdings any time. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
+- Interactive Brokers: ingests trade history plus a reconciliation snapshot through Anthropic's official connector. The full sync attempts it best-effort; unattended syncs skip interactive auth. See [IBKR setup](docs/setup.md#interactive-brokers-ibkr-portfolio-optional).
 
 ## Adapting to another country
 
@@ -271,8 +281,8 @@ FinDash is Israel-first, not Israel-only. The data model, scripts, and dashboard
 | Area | Where it's assumed | Swap it for |
 |---|---|---|
 | **Banks / card fetch** | `scripts/fetch_bank.js`, the `[hapoalim]`/`[cal]` secrets, and `fetch-bank-data` | Your country's banks — `israeli-bank-scrapers` covers many Israeli institutions, or wire in another scraper/aggregator. |
-| **Capital-gains tax** | `ISRAELI_CAPGAINS_TAX = 0.25` in `scripts/render_dashboard.py`; the 25% dividend withholding in `sync-finance-data` | Your jurisdiction's rate(s). |
-| **Base currency** | `BASE_CCY = "ILS"` in `scripts/render_dashboard.py`; the `USD/ILS` & `GBP/ILS` FX pairs; `en-IL` number formatting | Your reporting currency and FX pairs. |
+| **Tax treatment** | Source-recorded tax cash flows and payroll columns; no assumed capital-gains or dividend rate | Your jurisdiction's source documents and payroll fields. |
+| **Base currency** | The accounting/model reporting-currency default, FX refresh target, and `en-IL` number formatting | Your reporting currency, FX pairs, and locale. |
 | **Payslips & retirement** | `docs/doc-types/payslips.md`, `long-term-savings.md`, and the pension / training-fund columns in `scripts/init-db.sql` | Your payroll deductions and retirement products (401(k)/IRA, ISA, etc.). |
 | **Dates & language** | DD/MM ambiguity handling in `scripts/xlsx_to_rows.py`; Hebrew/RTL handling in the templates and renderer | Your locale's date format and language. |
 
@@ -280,7 +290,7 @@ Most interpretation lives in the skills' prompts rather than hard-coded rules, s
 
 ## Docs
 
-- [Setup](docs/setup.md) — Claude, rclone, Drive vault, Telegram, bank fetch, daily runs.
+- [Setup](docs/setup.md) — Claude, React dashboard, Drive, Telegram, bank fetch, and daily syncs.
 - [Drive layout](docs/drive-layout.md) — vault folders and filename conventions.
 - [Document types](docs/doc-types/README.md) — what each source document contains and how Claude should interpret it.
 - [SQLite schema](docs/sqlite-schema.md) — tables, money conventions, and audit rules.

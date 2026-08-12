@@ -5,7 +5,7 @@
 ## payslips/ — Israeli תלוש משכורת
 
 - **Format:** PDF, password-protected. Passwords are stored locally under `[pdf-passwords]` in `.secrets/findash`.
-- **Unlock:** `qpdf --password=$PASS --decrypt <file> <tmp>` then read the temp file. Delete temp when done.
+- **Unlock:** `python3 scripts/unlock_pdf.py unlock <staged-file>` then read the returned private path and run `python3 scripts/unlock_pdf.py delete <returned-path>` afterward. The wrapper resolves `[pdf-passwords]` internally, so the password never appears in a command or transcript.
 - **Typical content:**
   - Employer name + ID
   - Pay period (start / end / pay date)
@@ -17,3 +17,4 @@
   - `payslips` — one row, columns for the structured bits.
   - `payslip_line_items` — one row per unusual line (anything not in the explicit columns), with `kind` in {earning, deduction, info}.
   - `documents` — one row.
+- **Payment reconciliation:** capture `paid_on` whenever the document states it. A payslip and salary credit are treated as the same net payment only when `paid_on`, native currency, and exact native net amount all match one-to-one. A period boundary substituted for a missing payment date never proves a match, and near amounts/dates are not guessed.

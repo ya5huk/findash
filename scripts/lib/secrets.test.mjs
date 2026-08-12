@@ -2,7 +2,12 @@
 // Run: node --test scripts/lib/secrets.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseIni, resolveCompanyCreds } from './secrets.mjs';
+import {
+  isPlaceholderValue,
+  isUsableSecret,
+  parseIni,
+  resolveCompanyCreds,
+} from './secrets.mjs';
 
 const HAPOALIM = {
   section: 'hapoalim',
@@ -24,6 +29,19 @@ test('parseIni splits on the first = only (values may contain =)', () => {
   assert.equal(ini['pdf-passwords']['monthly-payslip'], 'p=ss=word');
 });
 
+test('parseIni accepts a UTF-8 BOM before the first section', () => {
+  const ini = parseIni('\uFEFF[hapoalim]\nuser_code=abc\n');
+  assert.deepEqual(ini.hapoalim, { user_code: 'abc' });
+});
+
+test('setup placeholders are not usable secrets', () => {
+  for (const value of ['<your token>', 'changeme', 'YOUR_TOKEN', 'replace-me']) {
+    assert.equal(isPlaceholderValue(value), true);
+    assert.equal(isUsableSecret(value), false);
+  }
+  assert.equal(isUsableSecret('actual-value'), true);
+});
+
 test('resolveCompanyCreds maps a [section] to env-var names', () => {
   const creds = resolveCompanyCreds('[hapoalim]\nuser_code=u\npassword=p\n', HAPOALIM);
   assert.deepEqual(creds, { HAPOALIM_USER_CODE: 'u', HAPOALIM_PASSWORD: 'p' });
@@ -38,4 +56,11 @@ test('resolveCompanyCreds ignores other sections and empty values', () => {
   assert.deepEqual(resolveCompanyCreds('[hapoalim]\nuser_code=\npassword=p\n', HAPOALIM), {
     HAPOALIM_PASSWORD: 'p',
   });
+});
+
+test('resolveCompanyCreds ignores setup placeholders', () => {
+  assert.deepEqual(
+    resolveCompanyCreds('[hapoalim]\nuser_code=<your user code>\npassword=changeme\n', HAPOALIM),
+    {},
+  );
 });

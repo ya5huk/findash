@@ -11,44 +11,58 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 
 - Run from the project root (the dir holding `CLAUDE.md`, `scripts/`, `templates/`, `docs/`). Paths below are relative.
 - Drive root ID: `root_folder_id=…` in `.secrets/findash` under `[drive]` (chmod 600, gitignored).
-- Seed script: `scripts/init-db.sql`. Vendor script: `scripts/bundle-assets.py`. npm manifest: `scripts/package.json`.
+- Seed script: `scripts/init-db.sql`. Vendor script: `scripts/bundle-assets.py`. npm manifests: `scripts/package.json` (bank fetch) and `dashboard/package.json` (React app).
 
 ## Checks
 
 | # | Category | What | Auto-fix? |
 |---|---|---|---|
-| 1 | Binaries | `qpdf`, `rclone`, `node ≥22.13.0`, `python3`, `sqlite3` on PATH | No |
-| 2 | Dirs | `data/`, `inbox/staging/fetched/`, `inbox/staging/drive/`, `output/`, `.secrets/` exist | `mkdir -p` |
-| 3 | rclone.conf | `./rclone.conf` exists + mode 600 | Perms; OR move `~/.config/rclone/rclone.conf` → `./rclone.conf` if local is absent |
+| 1 | Binaries | Python ≥3.10; feature-gated `qpdf`, `rclone`, and Node ≥22.13.0 | No |
+| 2 | Private state | local dirs exist at mode 700; files under `data/`, `inbox/`, `output/`, `.secrets/`, plus `rclone.conf` and browser-profile files, are mode 600 | `python3 scripts/harden_permissions.py --include-browser-profile` |
+| 3 | rclone.conf | when Drive is configured or explicitly selected: `./rclone.conf` exists + mode 600 | Perms; OR safely copy `~/.config/rclone/rclone.conf` when local is absent and Drive is opted into |
 | 4 | Drive root ID | `.secrets/findash` `[drive]` has a non-placeholder `root_folder_id=` | Perms only |
 | 5 | Secrets | `.secrets/findash` exists + mode 600; note which `[sections]` are filled | Perms only |
-| 6 | npm deps | `scripts/node_modules/` populated | `cd scripts && npm install` |
-| 7 | Vendor | 3 files under `templates/vendor/` | `python3 scripts/bundle-assets.py` |
-| 8 | DB | `data/finance.db` + has tables (incl. `positions`, `meta`) | `sqlite3 data/finance.db < scripts/init-db.sql` (fresh DB only) |
+| 6 | Bank npm deps | when `[hapoalim]` or `[cal]` is configured: `scripts/node_modules/` populated and `npm ls --omit=dev` succeeds | `scripts/install_node_deps.sh` |
+| 7 | Vendor | all 3 files pass `python3 scripts/bundle-assets.py --check` | `python3 scripts/bundle-assets.py` |
+| 8 | DB | `data/finance.db` exists, passes integrity/FK checks, and is at the current schema version | `python3 scripts/migrate_db.py --init` when missing; `python3 scripts/migrate_db.py` when outdated |
 | 9 | Chromium profiles | `~/.cache/findash/chromium-profile/{hapoalim,visaCal}/` (only when matching secrets exist) | No |
-| 10 | Drive live | `rclone lsf` against vault root succeeds in 5 s | No |
-| 11 | IBKR connector | optional — the official Interactive Brokers connector is added in Claude (claude.ai), not findash config; interactive auth (unattended daily runs skip it) | No |
+| 10 | Drive live + layout | `scripts/drive.sh probe` reaches the configured vault, then `scripts/drive.sh ensure-layout` creates/validates every fixed public folder without listing private names | Fixed folders only |
+| 11 | IBKR connector | optional — the official Interactive Brokers connector is added in Claude (claude.ai), not findash config; interactive auth (unattended syncs skip it) | No |
+| 12 | React dashboard | `dashboard/node_modules/` populated and `npm --prefix dashboard run build` succeeds | `scripts/install_dashboard_deps.sh` |
 
-Node: parse `node --version`; major ≥ 23, or major = 22 with patch ≥ 22.13.0. Perms: anything with non-zero group/others digit is wrong → `chmod 600`. For Drive live: read `root_folder_id=…` from `.secrets/findash` `[drive]`; if it's missing or the value is empty/placeholder/<20 chars, skip the live call and let check #4 own it.
+Run `python3 scripts/check_config.py` for checks 4–6 and the optional-integration
+gates. Its output contains booleans and known section names only—never values.
+A section is configured only when every required value is non-empty and not a
+setup placeholder; a header by itself does not count.
 
-Positions + meta tables (#8): if `data/finance.db` exists but lacks the `positions` or `meta` table (an older install), **don't** re-run `init-db.sql` against a populated DB — its plain `CREATE TABLE`s will error. `positions` is added idempotently on the next `/findash:fetch-investments`, `meta` on the next `/findash:sync-finance-data` (or apply the matching `init-db.sql` block by hand); note under ⚠️ Optional, not a blocker. If `meta.last_db_backup_at` exists and is older than 14 days, add one ⚠️ line — the weekly Drive backup hasn't succeeded lately. Same idea for the run journal: for each configured source, one ⚠️ staleness line when its journal key is missing or >5 days old — `last_ingest_hapoalim_at`/`last_ingest_cal_at` (when the matching `[section]` exists in `.secrets/findash`), `last_ibkr_at` (when an `accounts.live_source='ibkr'` row exists), and `last_sync_at` >3 days regardless. IBKR connector (#11): purely informational and **optional** — the official Interactive Brokers connector is added by the user via Claude's connector directory, not by findash, and is interactive-only, so never treat its absence as an install error. If it's visible in this session (`/mcp` shows `Interactive Brokers (IBKR) · connected`), note ✓ OK; otherwise a one-line ⚠️ Optional pointer ("add it via Claude → Connectors if you want portfolio snapshots"). If `data/finance.db` exists and has the `live_source` column, also sanity-check the marker: `SELECT COUNT(*) FROM accounts WHERE live_source='ibkr'` should be 0 or 1, and a marked account must not have `closed_on` set — more than one marked row, or a closed marked row, is a ⚠️ with a one-line explanation (`fetch-investments` refuses to run until it's resolved); zero rows just means `fetch-investments` hasn't run yet. Never print balances, account ids, or positions (principle #1).
+Versions: parse `node --version` (major ≥23, or major=22 with minor ≥13) and `python3 --version` (≥3.10). Perms: anything with non-zero group/others digit is wrong. For Drive live, run `scripts/drive.sh probe`; if it succeeds, run `scripts/drive.sh ensure-layout`. If the root ID is missing or still a placeholder, skip both and let check #4 own it. Never invoke raw `rclone` or print a vault listing.
+
+Database check (#8): run `python3 scripts/migrate_db.py --check`. A missing database is initialized with `--init`; an outdated populated database is upgraded by running `python3 scripts/migrate_db.py`. Never apply ad-hoc `ALTER TABLE` statements. A migration that reports conflicting same-date balances is a blocker requiring source reconciliation—never pick a value automatically. Verify `PRAGMA foreign_key_check` and `PRAGMA integrity_check` through `scripts/findash_db.py`. If `meta.last_db_backup_at` is older than 14 days, add one ⚠️ line. Apply the same staleness checks to configured sources, using active `account_feeds.provider='ibkr'` rows to decide whether IBKR is onboarded. Every active IBKR feed must point to a non-closed logical account.
+
+Also audit logical-account identity: compare active brokerage accounts' latest holdings and surrounding canonical trades, especially when one account has an IBKR feed. Substantially identical portfolios may be a wrapper and its underlying IBKR account represented twice. Treat a clear duplicate as an accuracy blocker for an interactive `/findash:fetch-investments` reconciliation; never sum it, auto-merge it, or print the matching securities/quantities. Similar amounts or one matching trade are not enough evidence. IBKR connector (#11) remains optional and interactive. Never print account ids, balances, positions, source identifiers, or counterparties.
+
+Audit bank-account transitions too. Multiple same-institution checking rows are an accuracy blocker when their activity does not economically overlap, an exact closing/opening transfer joins their boundary, or pre-boundary manual snapshots on the successor track the predecessor ledger. Treat a bank-renumbering migration as one logical account with separate feeds and recommend the reviewed `reconcile-account` flow. Do not infer identity from a similar balance alone, and never print the private comparison evidence.
+
+Count legacy brokerage `transactions` with `flow_type='investment'` that still lack normalized canonical evidence. Report only the count as a migration warning: where those rows overlap raw trade history, they cannot prove which trade cash they duplicate, so the renderer preserves the trade-derived legacy treatment and warns. Reconcile them interactively into canonical cash/trade events and add `trade_cash_links` only from full source evidence; never auto-match by amount/date or print row details.
 
 ## Auto-fix order
 
-1. `mkdir -p data inbox/staging/fetched inbox/staging/drive output .secrets`
-2. If `./rclone.conf` is missing but `~/.config/rclone/rclone.conf` exists (rclone's default XDG path — what plain `rclone config` writes to), move it: `mv ~/.config/rclone/rclone.conf ./rclone.conf`. Then re-check perms in step 3. (Not a symlink — the project owns this file.)
-3. `chmod 600` `rclone.conf` and `.secrets/findash` if either exists and is looser than 600
-4. Init DB if missing/empty (needs `sqlite3`)
-5. `(cd scripts && npm install)` if `node_modules/` empty (needs valid `node`; stream stderr)
-6. `python3 scripts/bundle-assets.py` if any vendor file missing (needs `python3`). On macOS, if it fails with `SSL: CERTIFICATE_VERIFY_FAILED`, fix and retry once: `pip3 install --upgrade certifi` then run the Python.org cert installer for the active version (`/Applications/Python\ <MAJOR.MINOR>/Install\ Certificates.command`). If the retry succeeds, list the cert fix and the asset bundle as two separate ✅ Fixed bullets. If it still fails, that's a 🚫 Blocker.
+1. `python3 scripts/harden_permissions.py --include-browser-profile` — creates the required private directories and fixes modes without printing private filenames. A refused symlink is a blocker that needs manual inspection; never follow it.
+2. Only when `[drive]` is configured with a usable `root_folder_id`, or the user explicitly opted into Drive during the current setup conversation: if `./rclone.conf` is missing but `~/.config/rclone/rclone.conf` exists (rclone's default XDG path — what plain `rclone config` writes to), run `python3 scripts/adopt_rclone_config.py`. It copies atomically at mode 600 and preserves the original for other rclone uses; it refuses symlinks and never overwrites an existing project config. Without that Drive opt-in, do not inspect or copy the global rclone config.
+3. Re-run `python3 scripts/harden_permissions.py --include-browser-profile` after copying `rclone.conf`.
+4. When the Drive preconditions hold and `scripts/drive.sh probe` succeeds, run `scripts/drive.sh ensure-layout`. It idempotently creates only the fixed public folder names from `docs/drive-layout.md`; it never prints or inspects private filenames. Report those folders as fixed only when the command succeeds.
+5. Run `python3 scripts/migrate_db.py --init` if the DB is missing/empty; otherwise run `python3 scripts/migrate_db.py` to apply pending migrations transactionally.
+6. Only when `[hapoalim]` or `[cal]` credentials are configured, run `scripts/install_node_deps.sh` when `node_modules/` is missing or `(cd scripts && npm ls --omit=dev)` fails (needs valid Node/npm; the wrapper uses `npm ci` with `package-lock.json`; stream stderr). Do not download Puppeteer/Chromium for users who did not opt into automatic bank fetching.
+7. Run `scripts/install_dashboard_deps.sh` when `dashboard/node_modules/` is missing or `npm --prefix dashboard ls` fails, then verify with `npm --prefix dashboard run build`.
+8. Run `python3 scripts/bundle-assets.py --check`. If any asset is missing or fails its pinned hash, run `python3 scripts/bundle-assets.py`, then re-run `--check` (needs `python3`). On macOS, an `SSL: CERTIFICATE_VERIFY_FAILED` is a blocker with the Python.org installer remediation (`/Applications/Python\ <MAJOR.MINOR>/Install\ Certificates.command`); do not mutate the user's global/user Python packages automatically.
 
 Re-check after each fix so the report shows post-fix state. **Don't** auto-install OS-level binaries (Homebrew / apt), touch nvm, generate creds, run `rclone config`, or run anything `--setup`. (Pip / npm / vendored asset downloads are fine — they're local, idempotent, and the whole point of auto-fix.)
 
-If the Drive live check's preconditions don't hold (rclone or rclone.conf missing), report `skipped — <reason>`, not a fake OAuth error.
+If the Drive live check's preconditions don't hold (rclone or rclone.conf missing), report `skipped — <reason>`, not a fake OAuth error. If the private probe succeeds but `ensure-layout` fails, report `Drive vault layout — could not prepare fixed folders`; do not call that an outage or OAuth failure.
 
 ## Blocker vs Optional
 
-- **Blocker** = the local pipeline literally can't run. (`python3`, `sqlite3`, vendor assets, DB init; `node`/npm deps when bank creds exist; `qpdf` when unsure.)
+- **Blocker** = the local pipeline literally can't run. (`python3`, DB init/migration; `node`/dashboard npm deps for the live app; bank npm deps when bank creds exist; vendor assets for Telegram HTML; `qpdf` when protected payslips are configured.)
 - **Optional** = one feature degrades. (`rclone` / `rclone.conf` / Drive root ID / Drive-live — Drive down just means manual-drop ingest pauses and the weekly backup skips, with `⚠️` warnings; bank fetch + dashboard still flow. Likewise the `[telegram]`, `[pdf-passwords]`, `[hapoalim]`, `[cal]` sections of `.secrets/findash` individually, chromium profile when its source's secrets are absent, and the IBKR connector when not added/connected — gates the investments feed.)
 - **Promotion:** chromium profile for a source becomes a blocker the moment that source's credentials land (a `[<source>]` section in `.secrets/findash`) — creds without a trusted cookie → SMS challenge.
 
@@ -96,7 +110,7 @@ Example on a partially-set-up macOS box:
   • IBKR connector — not connected; add it via Claude → Connectors for portfolio snapshots
 
 ✓ OK
-  qpdf, python3 3.13, node 22.14.0, sqlite3, rclone.conf, Drive root ID,
+  qpdf, python3 3.13, node 22.14.0, rclone.conf, Drive root ID,
   .secrets/findash ([hapoalim] [pdf-passwords]), finance.db (12 MB), node_modules/, vendor/
 ```
 
@@ -105,5 +119,5 @@ Example on a partially-set-up macOS box:
 - **Don't lie about fixes.** ✅ Fixed = you ran it AND re-checked. A failed attempt goes into 🚫 Blockers with the real error.
 - **Diagnose top-down.** If `rclone` is missing, the Drive-live line says "skipped — rclone missing", not "OAuth expired".
 - **Idempotent.** Second run on a healthy machine = one line. Only list under ✅ Fixed what you actually changed this run.
-- **Trust reality over CLAUDE.md.** If setup notes say "npm install" but `scripts/package.json` is missing, flag the missing manifest.
+- **Trust reality over setup prose.** If `scripts/package.json` or its lockfile is missing, flag the missing manifest instead of attempting an install.
 - **No new categories silently.** Surprise findings go under a `🔍 Note` line, not into the matrix.

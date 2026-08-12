@@ -1,7 +1,14 @@
 # IBKR account auto-resolution — design
 
 **Date:** 2026-07-02
-**Status:** draft, pending owner review
+**Status:** historical; superseded — do not implement
+
+> This document describes an abandoned single-`accounts.live_source` design.
+> The current architecture models one logical account with multiple
+> `account_feeds`, preserves raw observations as evidence for canonical events,
+> and applies versioned migrations through `scripts/migrate_db.py`. See
+> `docs/live-sources.md`, `docs/sqlite-schema.md`, and
+> `skills/fetch-investments/SKILL.md` for the maintained design.
 
 ## Problem
 

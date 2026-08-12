@@ -7,7 +7,8 @@
 export function parseIni(text) {
   const out = { '': {} };
   let section = '';
-  for (const raw of String(text).split('\n')) {
+  const normalizedText = String(text).replace(/^\uFEFF/, '');
+  for (const raw of normalizedText.split('\n')) {
     const line = raw.trim();
     if (!line || line[0] === '#' || line[0] === ';') continue;
     const header = line.match(/^\[(.+)\]$/);
@@ -23,6 +24,37 @@ export function parseIni(text) {
   return out;
 }
 
+const PLACEHOLDER_WORDS = new Set([
+  'changeme',
+  'change-me',
+  'replace-me',
+  'replace_me',
+  'todo',
+  'your-id',
+  'your-value',
+  'your_chat_id',
+  'your_password',
+  'your_root_folder_id',
+  'your_token',
+  'your_user_code',
+  'your_username',
+  'your_value',
+]);
+
+export function isPlaceholderValue(value) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return false;
+  const lowered = normalized.toLowerCase();
+  return (
+    (normalized.startsWith('<') && normalized.endsWith('>')) ||
+    PLACEHOLDER_WORDS.has(lowered)
+  );
+}
+
+export function isUsableSecret(value) {
+  return String(value ?? '').trim() !== '' && !isPlaceholderValue(value);
+}
+
 // Resolve `{ ENV_VAR: value }` for one company from the consolidated
 // `.secrets/findash` `[section]`. Pass '' (or null) for an absent file.
 export function resolveCompanyCreds(consolidatedText, spec) {
@@ -30,7 +62,7 @@ export function resolveCompanyCreds(consolidatedText, spec) {
   const env = {};
   for (const [fileKey, envName] of Object.entries(spec.keys)) {
     const value = section[fileKey];
-    if (value != null && value !== '') env[envName] = value;
+    if (isUsableSecret(value)) env[envName] = value;
   }
   return env;
 }

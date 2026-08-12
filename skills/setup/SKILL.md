@@ -1,19 +1,23 @@
 ---
 name: setup
-description: Use when the user says "set up findash", "onboard", "first-time setup", "get findash running", "configure findash", or is installing the plugin for the first time. Runs findash-doctor's safe auto-fixes, then guides the human through the steps only they can do — creating `.secrets/findash`, the rclone Google Drive OAuth, the Telegram bot, and the one-time bank-scraper browser seeding.
+description: Use when the user says "set up findash", "onboard", "first-time setup", "get findash running", "configure findash", or is installing the plugin for the first time. Runs findash-doctor's safe auto-fixes, prepares the local React dashboard, then guides the human through only the optional integrations they choose — local secrets, Drive OAuth, Telegram, and bank-scraper browser seeding.
 ---
 
 # setup
 
-First-time onboarding for findash. You **automate everything safe and local**, then **guide the human** through everything that needs them. You never enter the user's secrets yourself and never run anything that captures their passwords through this session — you tell them exactly what to put where, and they do it.
+First-time onboarding for findash. You **automate everything safe and local**, then **guide the human** through everything that needs them. You never enter the user's secrets yourself and never run anything that captures their passwords through this session — you tell them exactly what to put where, and they do it. Local financial directories are mode 700 and their files mode 600; `findash-doctor` enforces this through `scripts/harden_permissions.py`.
 
 ## Steps
 
 ### 1. Run the doctor's auto-fixes
 
-Run the `findash-doctor` skill (diagnose → auto-fix → report). It creates `data/ inbox/ output/ .secrets/`, fixes file modes, runs `npm install`, bundles the vendor assets, and inits the DB. Read its report: the **🚫 Blockers** and **⚠️ Optional** lines are exactly the steps below that the human still has to do. See [`../findash-doctor/SKILL.md`](../findash-doctor/SKILL.md).
+Run the `findash-doctor` skill (diagnose → auto-fix → report). It creates `data/ inbox/ output/ .secrets/`, fixes file modes, installs the React dashboard dependencies, bundles the Telegram HTML assets, and initializes the DB. It installs bank-scraper dependencies only after the user opts into a bank source, and it must not inspect or copy the user's global rclone config before the user explicitly opts into Drive. Read its report: the **🚫 Blockers** and **⚠️ Optional** lines are exactly the steps below that the human still has to do. See [`../findash-doctor/SKILL.md`](../findash-doctor/SKILL.md).
 
 ### 2. Secrets — one file, filled in by the user
+
+The examples below are deliberately unusable placeholders. Leaving a section
+unfinished is equivalent to omitting it: the doctor and runtime require all of
+that integration's values to be non-placeholder before enabling it.
 
 Tell the user to create `.secrets/findash` and `chmod 600` it. Give them this single block to paste and edit — they keep only the sections they need:
 
@@ -56,7 +60,7 @@ Then: `chmod 600 .secrets/findash`.
 
 These need a browser or an interactive terminal — you cannot do them, so print the exact commands and let the user run them:
 
-- **rclone Google Drive OAuth:** `rclone config` to authorize Drive, then make sure the token ends up at `./rclone.conf` (chmod 600). doctor moves `~/.config/rclone/rclone.conf` → `./rclone.conf` automatically if it finds it there. Drive powers manual-drop ingest + the weekly DB backup; without it the daily flow still runs degraded (bank fetch + dashboard), so this step can be deferred.
+- **rclone Google Drive OAuth (only after the user chooses Drive):** `rclone config` to authorize Drive, then make sure the token ends up at `./rclone.conf` (chmod 600). If rclone wrote its default `~/.config/rclone/rclone.conf`, doctor may safely copy it with `scripts/adopt_rclone_config.py` and leave the original in place only after this explicit opt-in or after a usable `[drive] root_folder_id` is present. Before then, neither setup nor doctor inspects or copies the global config. After the user adds `root_folder_id`, doctor runs `scripts/drive.sh ensure-layout` to create/validate every fixed public vault folder idempotently. Drive powers manual-drop ingest + the weekly DB backup; without it the full sync still runs degraded, so this step can be deferred.
 - **Telegram bot (only if you want delivery):** create a bot via `@BotFather` → `/newbot`, tap **Start** so it can DM you, then put `bot_token` + `chat_id` in `.secrets/findash` `[telegram]`.
 - **Bank-scraper browser seeding (only if you use fetch):** one interactive run per source to seed the trusted-device cookie:
   ```
@@ -64,7 +68,9 @@ These need a browser or an interactive terminal — you cannot do them, so print
   node scripts/fetch_bank.js --company=visaCal --setup
   ```
   Log in, complete OTP / CAPTCHA, trust the device, then press Enter. The profile is saved under `~/.cache/findash/chromium-profile/<companyId>/` and reused silently afterward.
-- **IBKR portfolio (only if you use Interactive Brokers):** IBKR is **not** a findash MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. Its auth is interactive-only, so the daily run attempts it best-effort and unattended runs skip it with a warning.
+  Chromium's sandbox remains enabled. Only inside a trusted isolated container
+  running as root, append `--disable-browser-sandbox` if Chromium cannot launch.
+- **IBKR portfolio (only if you use Interactive Brokers):** IBKR is **not** a findash MCP server — it's Anthropic's official **Interactive Brokers connector**, added through Claude's own connector directory. Its auth is interactive-only, so the full sync attempts it best-effort and unattended syncs skip it with a warning.
   1. **Add the connector once:** in Claude, `+` → **Connectors** → **Add connector** → **Browse connectors**, search **"ibkr"**, pick **Interactive Brokers (IBKR)** (under *Anthropic & Partners*), and log in with your IBKR credentials. Confirm with `/mcp` (`Interactive Brokers (IBKR) · connected`), and restart Claude Code so the session picks it up.
   2. **Account mapping is automatic.** `fetch-investments` resolves which findash account IBKR
      feeds (attaching to an existing broker when the ledgers clearly match — some brokers are
@@ -75,6 +81,12 @@ These need a browser or an interactive terminal — you cannot do them, so print
 ### 4. Re-run the doctor
 
 Run `findash-doctor` again and confirm it reports all-systems-go (or only optional gaps for features the user doesn't want). Point the user at [`docs/setup.md`](../../docs/setup.md) for the full reference.
+
+Finish with the three independent entry points:
+
+- `/findash:sync-finance-data` — fetch and ingest every configured source; no rendering or delivery.
+- `./run_dashboard.sh` — run the localhost React dashboard; its server refreshes market references every 30 minutes.
+- `/findash:send-finance-dashboard` — render a deterministic HTML snapshot and send it through Telegram when requested.
 
 ## Principles
 

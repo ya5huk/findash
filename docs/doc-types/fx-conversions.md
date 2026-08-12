@@ -10,7 +10,7 @@ Screenshot from your brokerage's app showing a single ILS↔USD conversion happe
 
 The full money path looks like:
 
-1. **ILS Hapoalim → ILS brokerage** (the actual deposit; recorded from the `investment_deposits` XLSX with `category='deposit'` on the brokerage account, USD-denominated rows where each row's description embeds the ILS source and rate)
+1. **ILS Hapoalim → ILS brokerage** (external funding; recorded from the source that reports the deposit)
 2. **ILS brokerage → USD brokerage** ← the FX screenshot captures this leg
 3. **Buy stocks**, reducing the brokerage's USD cash; tracked via `trades` rows
 
@@ -22,7 +22,8 @@ The full money path looks like:
   - `שער המרה` — FX rate applied
   - `סטטוס פעולה` — operation status (טופל = processed)
 - **Maps to:**
-  - `transactions` — one row on the brokerage account with `category='deposit'`, `currency='USD'`, amount = converted USD (`src / rate` rounded to 2dp), `counterparty='<your brokerage>'`, `reference=<אסמכתא>`, `description='from <src> ILS @ <rate>'`. This matches the convention used by the `investment_deposits` XLSX, so the FX shows up correctly in cumulative-deposits tracking.
-  - `fx_rates` — one row: `(date, USD, ILS, rate)` so the dashboard can value USD holdings on/around this date.
+  - two cash legs on the **same logical brokerage account**: a negative source-currency event and a positive destination-currency event. Give each a stable source identity/evidence link, `category='fx'`, and `flow_type='investment'`.
+  - `fx_rates` — one `source='document'` row in the stated orientation (or its mathematically exact inverse) so historical valuation can use the actual conversion rate.
+- **Not external funding:** this conversion does not add money to the investment portfolio. Never label either leg as a `deposit`/`withdrawal` transfer merely to make a chart move; the earlier bank→brokerage event is the external flow.
 - **Do NOT insert** debit/credit pairs on Hapoalim sub-accounts. The FX is happening entirely inside the brokerage; Hapoalim's ledger has nothing to record on this date.
-- **Sign of converted amount:** the brokerage rounds; if the screenshot only shows the source amount, compute the USD amount (`src / rate` or `src * rate` depending on direction) and proceed.
+- **Converted amount:** prefer both posted amounts. If one side and an actual applied rate are explicit, compute the missing side once using the shared currency helpers and the stated direction. If either is ambiguous, retain the observation as review evidence instead of confirming invented cash.

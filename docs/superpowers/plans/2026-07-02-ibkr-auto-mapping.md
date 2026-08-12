@@ -1,6 +1,15 @@
 # IBKR Account Auto-Resolution Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **HISTORICAL — DO NOT IMPLEMENT.** This plan was superseded by the normalized
+> ledger architecture: logical accounts can have multiple `account_feeds`, raw
+> observations link to canonical events through evidence tables, and schema
+> changes run through `scripts/migrate_db.py`. Its single
+> `accounts.live_source` marker and direct-SQL migration steps are retained only
+> as design history. Use `docs/live-sources.md`, `docs/sqlite-schema.md`, and the
+> current `skills/fetch-investments/SKILL.md` instead.
+
+> Historical note: this was originally formatted as an executable task plan.
+> Its unchecked boxes no longer describe work to perform.
 
 **Goal:** Replace the hand-pasted `[ibkr] account_name` config with automatic, evidence-based account resolution persisted as a DB marker.
 

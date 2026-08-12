@@ -11,14 +11,29 @@
 - "ערכי פדיון" row = balance per component.
 - **Maps to:**
   - `accounts` — create once with kind='pension', record `investment_track`.
-  - `balances` — 3 rows (one per component) for the as-of date.
+  - `balances` — 3 rows (one per component) for the as-of date when the
+    breakdown is complete; otherwise retain the stated total with
+    `component=NULL` rather than guessing a split.
   - `transactions` — one row per (deposit month, component); `category='pension_deposit'`, `counterparty=employer`.
+- Insert a component breakdown only when that same dated snapshot exposes all
+  three components. A partial/cropped breakdown is evidence, but it must not
+  displace a newer stated total in dashboard valuation.
+- For valuation, carry recorded deposits and withdrawals after the latest
+  coherent snapshot as known flows. Before the first snapshot, those flows are
+  a partial lower-bound value rather than zero. Investment return remains
+  unknown between statements, and every later statement reanchors the account
+  to its reported market value.
 
 ### Training fund statement (e.g. Harel)
 
 - Same shape as pension but with 2 components (no severance), and the table headers are slightly different.
 - Note the **liquidity date** ("מועד נזילות") → `accounts.liquidity_date`.
 - **Maps to:** same pattern as pension but 2-component.
+- The dashboard classifies it as Locked before that date and Investments from
+  the liquidity date onward; the account does not turn into cash merely because
+  withdrawal became available.
+- As with pension, the two components form one coherent dated snapshot; do not
+  treat one visible component as a replacement for a reported account total.
 
 ### Pension movements report
 

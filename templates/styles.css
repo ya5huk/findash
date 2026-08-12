@@ -167,8 +167,14 @@ details.breakdown[open] > summary::before { content: '−'; }
 
 /* ---------- tables ---------- */
 
+.table-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
 table.ledger {
   width: 100%;
+  min-width: 0;
   border-collapse: collapse;
   margin-bottom: 8px;
 }
@@ -188,6 +194,7 @@ table.ledger thead th {
   font-size: 0.78rem;
   color: var(--muted-ink);
   border-bottom: 1px solid var(--ink);
+  overflow-wrap: anywhere;
 }
 
 table.ledger tbody tr:last-child td { border-bottom: none; }
@@ -376,6 +383,80 @@ table.flow-summary tfoot td.num {
 table.flow-summary td.num.pos { color: var(--positive); }
 table.flow-summary td.num.neg { color: var(--negative); }
 
+table.flow-summary tr.flow-job-income td:first-child,
+table.flow-summary tr.flow-dividends td:first-child,
+table.flow-summary tr.flow-other-income td:first-child {
+  padding-left: 28px;
+}
+
+table.flow-summary tr.flow-dividends td {
+  color: var(--muted-ink);
+}
+
+/* Dense ledgers still fit the page: repeated metadata wraps or truncates inside
+   a bounded column instead of widening the whole document. */
+table.positions-table,
+table.payslips-table,
+table.expenses-table,
+table.dividends-table,
+table.dividends-year-table {
+  table-layout: fixed;
+}
+
+table.positions-table {
+  font-size: 0.82rem;
+}
+
+table.positions-table th,
+table.positions-table td,
+table.payslips-table th,
+table.payslips-table td {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+table.positions-table th:nth-child(1) { width: 10%; }
+table.positions-table th:nth-child(2) { width: 17%; }
+table.positions-table th:nth-child(3) { width: 8%; }
+
+table.payslips-table {
+  font-size: 0.78rem;
+}
+
+table.payslips-table th:nth-child(1) { width: 9%; }
+table.payslips-table th:nth-child(2) { width: 14%; }
+table.payslips-table th:nth-child(3),
+table.payslips-table th:nth-child(4) { width: 10%; }
+table.payslips-table th:nth-child(5) { width: 15%; }
+table.payslips-table th:nth-child(6),
+table.payslips-table th:nth-child(7) { width: 14%; }
+table.payslips-table th:nth-child(8) { width: 14%; }
+
+.money-stack span {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.money-stack small {
+  color: var(--muted-ink);
+  font-size: 0.78em;
+  font-weight: 400;
+}
+
+.employer-cell,
+.merchant-cell,
+.payer-cell,
+.holding-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+table.dividends-table th:nth-child(1) { width: 30%; }
+table.dividends-table th:nth-child(2) { width: 28%; }
+table.dividends-table th:nth-child(3) { width: 42%; }
+
 /* ---------- expenses (scrollable recent list) ---------- */
 
 .expenses-scroll {
@@ -395,6 +476,15 @@ table.flow-summary td.num.neg { color: var(--negative); }
   top: 0;
   background: var(--parchment);
   z-index: 1;
+}
+
+table.expenses-table th:nth-child(1) { width: 17%; }
+table.expenses-table th:nth-child(2) { width: 43%; }
+table.expenses-table th:nth-child(3) { width: 22%; }
+table.expenses-table th:nth-child(4) { width: 18%; }
+
+.category-cell {
+  overflow-wrap: anywhere;
 }
 
 /* ---------- footnotes / metadata ---------- */
@@ -485,4 +575,69 @@ details.subsection .row-count {
   body { padding: 28px 18px 60px; }
   .headline-amount { font-size: 2.4rem; }
   table.ledger { font-size: 0.92rem; }
+  table.positions-table,
+  table.payslips-table { font-size: 0.72rem; }
+  table.ledger th,
+  table.ledger td { padding-left: 4px; padding-right: 4px; }
+
+  /* Eight finance columns cannot stay legible on a phone. Reflow each record
+     into a two-column ledger card while preserving every field. */
+  table.positions-table thead,
+  table.payslips-table thead {
+    display: none;
+  }
+
+  table.positions-table tbody,
+  table.payslips-table tbody {
+    display: block;
+  }
+
+  table.positions-table tbody tr,
+  table.payslips-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-bottom: 1px solid var(--ink);
+    padding: 6px 0;
+  }
+
+  table.positions-table tbody td,
+  table.payslips-table tbody td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    border-bottom: 0;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  table.positions-table tbody td::before,
+  table.payslips-table tbody td::before {
+    display: block;
+    color: var(--muted-ink);
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 0.78em;
+    letter-spacing: 0.08em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  table.positions-table tbody td:nth-child(1)::before { content: 'Ticker'; }
+  table.positions-table tbody td:nth-child(2)::before { content: 'Account'; }
+  table.positions-table tbody td:nth-child(3)::before { content: 'Quantity'; }
+  table.positions-table tbody td:nth-child(4)::before { content: 'Average cost'; }
+  table.positions-table tbody td:nth-child(5)::before { content: 'Price'; }
+  table.positions-table tbody td:nth-child(6)::before { content: 'Market value'; }
+  table.positions-table tbody td:nth-child(7)::before { content: 'P/L'; }
+  table.positions-table tbody td:nth-child(8)::before { content: 'P/L %'; }
+
+  table.payslips-table tbody td:nth-child(1)::before { content: 'Period'; }
+  table.payslips-table tbody td:nth-child(2)::before { content: 'Employer'; }
+  table.payslips-table tbody td:nth-child(3)::before { content: 'Gross'; }
+  table.payslips-table tbody td:nth-child(4)::before { content: 'Net'; }
+  table.payslips-table tbody td:nth-child(5)::before { content: 'Deductions'; }
+  table.payslips-table tbody td:nth-child(6)::before { content: 'Pension'; }
+  table.payslips-table tbody td:nth-child(7)::before { content: 'Study fund'; }
+  table.payslips-table tbody td:nth-child(8)::before { content: 'Paid'; }
 }
