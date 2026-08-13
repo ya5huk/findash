@@ -18,6 +18,9 @@ class CategoryCompatibilityTests(unittest.TestCase):
         self.assertEqual(flow_type_for(" Salary ", None, 100), "income")
         self.assertEqual(flow_type_for("CARD_PAYMENT", None, -100), "transfer")
 
+    def test_legacy_fx_is_internal_investment_not_external_transfer(self):
+        self.assertEqual(flow_type_for("fx", None, 100), "investment")
+
 
 if __name__ == "__main__":
     unittest.main()

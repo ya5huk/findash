@@ -611,6 +611,169 @@ class AccountingEngineTest(unittest.TestCase):
         )
         self.assertEqual(known_flows.native_value_minor, Decimal("0"))
 
+    def test_pension_snapshot_rolls_forward_with_later_payslips(self):
+        con = self.open_database()
+        aid = account(con, "Pension", "pension", "ILS")
+        con.execute(
+            """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+               VALUES(?,'2026-01-31',600000,'ILS')""",
+            (aid,),
+        )
+        con.executemany(
+            """INSERT INTO payslips(
+                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
+                   pension_employee_minor,pension_employer_minor,currency
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    "2026-02-01", "2026-02-28", "2026-03-05", "Employer",
+                    100000, 70000, 10000, 15000, "ILS",
+                ),
+                (
+                    "2026-03-01", "2026-03-31", "2026-04-05", "Employer",
+                    100000, 70000, 11000, 16000, "ILS",
+                ),
+            ],
+        )
+
+        state = AccountingEngine(con).state_at("2026-04-05")
+
+        self.assertEqual(state.account_total_minor(aid), Decimal("652000"))
+        estimate = next(
+            row for row in state.rows if row.item_key == "known_events_ils"
+        )
+        self.assertEqual(estimate.native_value_minor, Decimal("52000"))
+        self.assertIn(
+            "payslip contributions are estimated until the next fund statement",
+            estimate.coverage.warnings,
+        )
+
+    def test_payslip_paid_after_snapshot_is_not_hidden_by_its_pay_period(self):
+        con = self.open_database()
+        aid = account(con, "Pension", "pension", "ILS")
+        con.execute(
+            """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+               VALUES(?,'2026-03-01',600000,'ILS')""",
+            (aid,),
+        )
+        con.execute(
+            """INSERT INTO payslips(
+                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
+                   pension_employee_minor,pension_employer_minor,currency
+               ) VALUES(
+                   '2026-02-01','2026-02-28','2026-03-05','Employer',
+                   100000,70000,10000,15000,'ILS'
+               )"""
+        )
+
+        state = AccountingEngine(con).state_at("2026-03-05")
+
+        self.assertEqual(state.account_total_minor(aid), Decimal("625000"))
+
+    def test_new_fund_snapshot_replaces_prior_payslip_estimates(self):
+        con = self.open_database()
+        aid = account(con, "Study fund", "study_fund", "ILS")
+        con.execute(
+            """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+               VALUES(?,'2026-01-31',600000,'ILS')""",
+            (aid,),
+        )
+        con.execute(
+            """INSERT INTO payslips(
+                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
+                   study_fund_employee_minor,study_fund_employer_minor,currency
+               ) VALUES(
+                   '2026-02-01','2026-02-28','2026-03-05','Employer',
+                   100000,70000,5000,7500,'ILS'
+               )"""
+        )
+
+        estimated = AccountingEngine(con).state_at("2026-03-05")
+        self.assertEqual(estimated.account_total_minor(aid), Decimal("612500"))
+
+        con.execute(
+            """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+               VALUES(?,'2026-03-31',620000,'ILS')""",
+            (aid,),
+        )
+
+        state = AccountingEngine(con).state_at("2026-03-31")
+
+        self.assertEqual(state.account_total_minor(aid), Decimal("620000"))
+        self.assertFalse(
+            any(row.item_key == "known_events_ils" for row in state.rows)
+        )
+
+    def test_exact_fund_movements_take_precedence_over_older_payslips(self):
+        con = self.open_database()
+        aid = account(con, "Pension", "pension", "ILS")
+        con.execute(
+            """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+               VALUES(?,'2026-01-31',600000,'ILS')""",
+            (aid,),
+        )
+        con.executemany(
+            """INSERT INTO payslips(
+                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
+                   pension_employee_minor,pension_employer_minor,currency
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    "2026-02-01", "2026-02-28", "2026-03-05", "Employer",
+                    100000, 70000, 10000, 15000, "ILS",
+                ),
+                (
+                    "2026-03-01", "2026-03-31", "2026-04-05", "Employer",
+                    100000, 70000, 11000, 16000, "ILS",
+                ),
+            ],
+        )
+        con.execute(
+            """INSERT INTO transactions(
+                   account_id,date,amount_minor,currency,category,flow_type
+               ) VALUES(?,'2026-03-20',26000,'ILS','pension_deposit','transfer')""",
+            (aid,),
+        )
+
+        state = AccountingEngine(con).state_at("2026-04-05")
+
+        # The exact movement covers older payroll rows; only the newer payslip is
+        # estimated on top of it.
+        self.assertEqual(state.account_total_minor(aid), Decimal("653000"))
+
+    def test_payslip_contributions_are_not_duplicated_across_two_funds(self):
+        con = self.open_database()
+        first = account(con, "Pension A", "pension", "ILS")
+        second = account(con, "Pension B", "pension", "ILS")
+        for aid in (first, second):
+            con.execute(
+                """INSERT INTO balances(account_id,as_of,amount_minor,currency)
+                   VALUES(?,'2026-01-31',600000,'ILS')""",
+                (aid,),
+            )
+        con.execute(
+            """INSERT INTO payslips(
+                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
+                   pension_employee_minor,pension_employer_minor,currency
+               ) VALUES(
+                   '2026-02-01','2026-02-28','2026-03-05','Employer',
+                   100000,70000,10000,15000,'ILS'
+               )"""
+        )
+
+        state = AccountingEngine(con).state_at("2026-03-05")
+
+        self.assertEqual(state.account_total_minor(first), Decimal("600000"))
+        self.assertEqual(state.account_total_minor(second), Decimal("600000"))
+        self.assertTrue(
+            all(
+                "payslip contributions could not be routed to one fund account"
+                in row.coverage.warnings
+                for row in state.rows
+                if row.item_key == "known_events_ils"
+            )
+        )
+
     def test_non_brokerage_snapshot_key_is_stable_across_source_shapes(self):
         con = self.open_database()
         aid = account(con, "Card", "credit_card", "ILS")

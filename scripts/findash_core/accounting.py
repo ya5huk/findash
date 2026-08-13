@@ -24,6 +24,10 @@ from findash_core.currencies import canonical_currency
 from findash_core.errors import AccountingError, MissingRateError
 from findash_core.events import EventReader
 from findash_core.market_data import FxBook, PriceBook, _decimal
+from findash_core.movement_classification import (
+    fx_conversion_documents,
+    is_internal_fx_transaction,
+)
 from findash_core.models import (
     AccountState,
     Coverage,
@@ -146,6 +150,102 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
         )
         return value, point.date
 
+    def _cash_movement_after(
+        self,
+        transactions: list[dict],
+        trades: list[dict],
+        currency: str,
+        anchor_date: Optional[str],
+        *,
+        include_trade_cash: bool,
+    ) -> tuple[Decimal, bool, int]:
+        """Return event-derived cash after an exclusive dated anchor.
+
+        This is the one calculation used both by account-state reconstruction and
+        complete-snapshot reconciliation.  Keeping the two paths identical prevents
+        a funding inference from explaining a cash change differently than the
+        dashboard itself.
+        """
+
+        currency = canonical_currency(currency)
+        eligible_trades = [
+            trade
+            for trade in trades
+            if canonical_currency(trade["currency"]) == currency
+            and (not anchor_date or trade["date"] > anchor_date)
+        ]
+        amount = ZERO
+        suppressed_legacy_cash = False
+        derived_trade_count = 0
+        for tx in transactions:
+            if canonical_currency(tx["currency"]) != currency:
+                continue
+            if anchor_date and tx["date"] <= anchor_date:
+                continue
+            tx_flow = flow_type_for(
+                tx["category"], tx.get("flow_type"), tx["amount_minor"]
+            )
+            linked_trade_min = tx.get("linked_trade_min_date")
+            linked_trade_max = tx.get("linked_trade_max_date")
+            if anchor_date and linked_trade_max:
+                if linked_trade_max <= anchor_date:
+                    # The anchor already incorporates the economics of every
+                    # trade this later posted cash event replaces.
+                    continue
+                if linked_trade_min and linked_trade_min <= anchor_date:
+                    raise AccountingError(
+                        "linked trade cash spans a balance anchor; reconcile "
+                        "the settlement grouping before valuation"
+                    )
+            # Before normalized events existed, an investment transaction often
+            # duplicated raw trade history with no durable relationship between
+            # them. Keep the old trade-derived treatment only when overlapping
+            # eligible trades make that ambiguity real.
+            if (
+                include_trade_cash
+                and tx_flow == "investment"
+                and not tx.get("is_canonical")
+                and eligible_trades
+            ):
+                suppressed_legacy_cash = True
+                continue
+            amount += _decimal(tx["amount_minor"])
+
+        if include_trade_cash:
+            for trade in eligible_trades:
+                if trade.get("cash_linked"):
+                    continue
+                gross = _decimal(trade["shares"]) * _decimal(trade["price_minor"])
+                fees = _decimal(trade["fees_minor"] or 0)
+                amount += -gross - fees if trade["side"] == "buy" else gross - fees
+                derived_trade_count += 1
+        return amount, suppressed_legacy_cash, derived_trade_count
+
+    def brokerage_cash_movement_between(
+        self,
+        account_id: int,
+        currency: str,
+        start_exclusive: str,
+        end_inclusive: str,
+    ) -> tuple[Decimal, int]:
+        """Reconstruct known brokerage cash movement between two snapshots."""
+
+        account = self.con.execute(
+            "SELECT kind FROM accounts WHERE id=?", (account_id,)
+        ).fetchone()
+        if account is None or account["kind"] != "brokerage":
+            raise AccountingError("cash reconciliation requires a brokerage account")
+        if date.fromisoformat(start_exclusive) >= date.fromisoformat(end_inclusive):
+            raise AccountingError("cash reconciliation snapshots are not chronological")
+        movement, _, trade_count = self._cash_movement_after(
+            self.transactions(account_id, end_inclusive),
+            self.trades(account_id, end_inclusive),
+            currency,
+            start_exclusive,
+            include_trade_cash=True,
+        )
+        return movement, trade_count
+
     def _bucket_for(self, account: sqlite3.Row, as_of: str) -> str:
         if account["kind"] == "credit_card":
             return "Liabilities"
@@ -233,61 +333,16 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
             unanchored_credit_card = (
                 account["kind"] == "credit_card" and anchor_date is None
             )
-            eligible_trades = [
-                trade
-                for trade in trades
-                if canonical_currency(trade["currency"]) == currency
-                and (not anchor_date or trade["date"] > anchor_date)
-            ]
             suppressed_legacy_cash = False
-
-            for tx in transactions:
-                if canonical_currency(tx["currency"]) != currency:
-                    continue
-                # Card exports contain charges but commonly omit the repayment
-                # leg.  Without a balance anchor, accumulating those charges is
-                # not a point-in-time liability; it grows forever and then
-                # creates a false gain when the first real balance resets it.
-                if unanchored_credit_card:
-                    continue
-                if anchor_date and tx["date"] <= anchor_date:
-                    continue
-                tx_flow = flow_type_for(tx["category"], tx.get("flow_type"), tx["amount_minor"])
-                linked_trade_min = tx.get("linked_trade_min_date")
-                linked_trade_max = tx.get("linked_trade_max_date")
-                if anchor_date and linked_trade_max:
-                    if linked_trade_max <= anchor_date:
-                        # The anchor already incorporates the economics of every
-                        # trade this later posted cash event replaces.
-                        continue
-                    if linked_trade_min and linked_trade_min <= anchor_date:
-                        raise AccountingError(
-                            "linked trade cash spans a balance anchor; reconcile "
-                            "the settlement grouping before valuation"
-                        )
-                # Before normalized events existed, an investment transaction often
-                # duplicated raw trade history with no durable relationship between
-                # them. Keep the old trade-derived treatment only when overlapping
-                # eligible trades make that ambiguity real; an isolated explicit cash
-                # observation must not disappear. Canonical cash is always counted and
-                # trade_cash_links says exactly which canonical trades it replaces.
-                if (
-                    include_trade_cash
-                    and tx_flow == "investment"
-                    and not tx.get("is_canonical")
-                    and eligible_trades
-                ):
-                    suppressed_legacy_cash = True
-                    continue
-                amount += _decimal(tx["amount_minor"])
-
-            if include_trade_cash:
-                for trade in eligible_trades:
-                    if trade.get("cash_linked"):
-                        continue
-                    gross = _decimal(trade["shares"]) * _decimal(trade["price_minor"])
-                    fees = _decimal(trade["fees_minor"] or 0)
-                    amount += -gross - fees if trade["side"] == "buy" else gross - fees
+            if not unanchored_credit_card:
+                movement, suppressed_legacy_cash, _ = self._cash_movement_after(
+                    transactions,
+                    trades,
+                    currency,
+                    anchor_date,
+                    include_trade_cash=include_trade_cash,
+                )
+                amount += movement
 
             if amount == ZERO and not anchor and not transactions and not trades:
                 continue
@@ -351,12 +406,13 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
     def _locked_account_rows(
         self, account: sqlite3.Row, snapshots: list[dict], as_of: str
     ) -> list[ValuationRow]:
-        """Carry known locked-account flows between market-value snapshots.
+        """Carry known and payroll-estimated flows between fund snapshots.
 
-        Contributions are exact cash observations even though investment return
-        between statements is unknown.  Keeping them as a separate valuation row
-        makes that known minimum visible without pretending it is a fresh market
-        valuation; the next statement reanchors the account and resets the row.
+        Statement movements are exact observations.  Later payslips provide a
+        conservative contribution estimate when they can be routed to exactly one
+        active account of the relevant kind.  Keeping both in a separate row makes
+        the estimate visible without pretending it includes market return; the next
+        fund statement reanchors the account and resets the row.
         """
 
         snapshot_rows = self._snapshot_only_rows(account, snapshots, as_of)
@@ -372,9 +428,22 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
             for row in all_transactions
             if anchor_date is None or str(row["date"]) > anchor_date
         ]
-        if not snapshot_rows and not all_transactions:
+        payslip_amounts, payslip_dates, payslip_estimated, payslip_ambiguous = (
+            self._locked_payslip_contributions(
+                account,
+                as_of,
+                anchor_date=anchor_date,
+                account_transactions=all_transactions,
+            )
+        )
+        if not snapshot_rows and not all_transactions and not payslip_dates:
             return []
-        if snapshot_rows and not all_transactions:
+        if (
+            snapshot_rows
+            and not all_transactions
+            and not payslip_dates
+            and not payslip_ambiguous
+        ):
             return snapshot_rows
 
         amounts: dict[str, Decimal] = defaultdict(lambda: ZERO)
@@ -383,6 +452,9 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
             currency = canonical_currency(transaction["currency"])
             amounts[currency] += _decimal(transaction["amount_minor"])
             observed_by_currency[currency].append(str(transaction["date"]))
+        for currency, amount in payslip_amounts.items():
+            amounts[currency] += amount
+            observed_by_currency[currency].extend(payslip_dates[currency])
 
         currencies = {row.currency for row in snapshot_rows} | set(amounts)
         if not currencies and account["currency"]:
@@ -400,14 +472,22 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
             limiting_observation = min(observed, fx_date) if observed else fx_date
             if anchor_date:
                 method = "snapshot+events"
-                warnings = (
-                    "market return after latest locked-account snapshot is unobserved",
-                )
+                warnings = [
+                    "market return after latest locked-account snapshot is unobserved"
+                ]
             else:
                 method = "events-partial"
-                warnings = (
+                warnings = [
                     "no opening balance snapshot",
                     "locked-account market return is unobserved",
+                ]
+            if payslip_estimated:
+                warnings.append(
+                    "payslip contributions are estimated until the next fund statement"
+                )
+            if payslip_ambiguous:
+                warnings.append(
+                    "payslip contributions could not be routed to one fund account"
                 )
             flow_rows.append(
                 ValuationRow(
@@ -419,7 +499,11 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
                     bucket=self._bucket_for(account, as_of),
                     item_type="balance",
                     item_key=f"known_events_{currency.lower()}",
-                    label=f"{account['name']} · known flows since statement",
+                    label=(
+                        f"{account['name']} · flows since statement (estimated)"
+                        if payslip_estimated
+                        else f"{account['name']} · known flows since statement"
+                    ),
                     currency=currency,
                     native_value_minor=amount,
                     reporting_currency=self.reporting_currency,
@@ -430,11 +514,112 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
                         observed_through=limiting_observation,
                         complete_from=anchor_date,
                         stale_days=_date_days(limiting_observation, as_of),
-                        warnings=warnings,
+                        warnings=tuple(warnings),
                     ),
                 )
             )
         return snapshot_rows + flow_rows
+
+    def _locked_payslip_contributions(
+        self,
+        account: sqlite3.Row,
+        as_of: str,
+        *,
+        anchor_date: Optional[str],
+        account_transactions: list[dict],
+    ) -> tuple[
+        dict[str, Decimal],
+        dict[str, list[str]],
+        bool,
+        bool,
+    ]:
+        """Estimate post-snapshot contributions from unambiguous payslips.
+
+        A later exact fund movement takes precedence over earlier payroll rows.  A
+        payslip is routed only when one active account of the same kind and currency
+        exists on its effective date; multiple policies must be resolved by source
+        evidence rather than split or duplicated mechanically.
+        """
+
+        contribution_fields = {
+            "pension": ("pension_employee_minor", "pension_employer_minor"),
+            "study_fund": (
+                "study_fund_employee_minor",
+                "study_fund_employer_minor",
+            ),
+        }.get(str(account["kind"]))
+        if contribution_fields is None or not _table_exists(self.con, "payslips"):
+            return {}, {}, False, False
+
+        contribution_category = (
+            "pension_deposit"
+            if account["kind"] == "pension"
+            else "study_fund_deposit"
+        )
+        recorded_dates = [
+            str(row["date"])
+            for row in account_transactions
+            if _decimal(row["amount_minor"]) > ZERO
+            and str(row.get("category") or "").strip().casefold()
+            == contribution_category
+            and (anchor_date is None or str(row["date"]) > anchor_date)
+        ]
+        recorded_cutoff = max(recorded_dates, default=None)
+        employee_field, employer_field = contribution_fields
+        payslips = self.con.execute(
+            f"""SELECT id, period_end,
+                       COALESCE(paid_on,period_end) AS contribution_date,
+                       currency, {employee_field} AS employee_minor,
+                       {employer_field} AS employer_minor
+                  FROM payslips
+                 WHERE COALESCE(paid_on,period_end)<=?
+                 ORDER BY contribution_date, id""",
+            (as_of,),
+        ).fetchall()
+
+        amounts: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        dates: dict[str, list[str]] = defaultdict(list)
+        estimated = False
+        ambiguous = False
+        for payslip in payslips:
+            contribution_date = str(payslip["contribution_date"])
+            if anchor_date is not None and contribution_date <= anchor_date:
+                continue
+            # A continuous fund movement report is more authoritative than the
+            # corresponding older payroll estimates. Its latest contribution
+            # covers payroll periods ending on or before that boundary; compare
+            # the salary period rather than its later bank payment date.
+            if (
+                recorded_cutoff is not None
+                and str(payslip["period_end"]) <= recorded_cutoff
+            ):
+                continue
+            currency = canonical_currency(payslip["currency"])
+            amount = _decimal(payslip["employee_minor"]) + _decimal(
+                payslip["employer_minor"]
+            )
+            if amount == ZERO:
+                continue
+            eligible = self.con.execute(
+                """SELECT id
+                     FROM accounts
+                    WHERE kind=? AND currency=?
+                      AND (opened_on IS NULL OR opened_on<=?)
+                      AND (closed_on IS NULL OR ?<closed_on)
+                    ORDER BY id""",
+                (account["kind"], currency, contribution_date, contribution_date),
+            ).fetchall()
+            if len(eligible) != 1:
+                if any(int(row["id"]) == int(account["id"]) for row in eligible):
+                    ambiguous = True
+                continue
+            if int(eligible[0]["id"]) != int(account["id"]):
+                continue
+            amounts[currency] += amount
+            dates[currency].append(contribution_date)
+            estimated = True
+
+        return dict(amounts), dict(dates), estimated, ambiguous
 
     def _snapshot_only_rows(
         self, account: sqlite3.Row, snapshots: list[dict], as_of: str
@@ -789,19 +974,14 @@ class AccountingEngine(BrokerageHoldingsMixin, EventReader):
 
     def _external_flows(self, account: sqlite3.Row, as_of: str) -> list[ExternalFlow]:
         result: list[ExternalFlow] = []
+        fx_document_ids = fx_conversion_documents(self.con, as_of=as_of)
         for tx in self.transactions(account["id"], as_of):
             kind = flow_type_for(tx["category"], tx.get("flow_type"), tx["amount_minor"])
-            source_doc_id = tx.get("source_doc_id")
-            internal_fx_document = bool(
-                source_doc_id
-                and self.con.execute(
-                    """SELECT 1 FROM documents
-                        WHERE id=? AND drive_path LIKE 'fx-conversions/%'""",
-                    (source_doc_id,),
-                ).fetchone()
-            )
-            if kind != "transfer" or internal_fx_document:
+            if kind != "transfer" or is_internal_fx_transaction(
+                tx, fx_document_ids
+            ):
                 continue
+            source_doc_id = tx.get("source_doc_id")
             currency = canonical_currency(tx["currency"])
             reporting = self._reporting_value(
                 _decimal(tx["amount_minor"]), currency, tx["date"]

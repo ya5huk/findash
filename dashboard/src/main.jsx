@@ -49,6 +49,14 @@ function signedPercent(value, digits = 2) {
   return `${Number(value) > 0 ? '+' : ''}${number(value, digits)}%`
 }
 
+function completePositionTotal(positions, field) {
+  if (!positions.length) return 0
+  if (positions.some((position) => (
+    position[field] == null || !Number.isFinite(Number(position[field]))
+  ))) return null
+  return positions.reduce((total, position) => total + Number(position[field]), 0)
+}
+
 function marketTrend(value) {
   const percent = Number(value)
   if (!Number.isFinite(percent) || Math.abs(percent) < MARKET_TREND_NEUTRAL_PCT) {
@@ -232,7 +240,7 @@ function DashboardTabs({ tabs, activeTab, onChange }) {
         aria-labelledby={`tab-${active.id}`}
         key={active.id}
       >
-        <header className="tab-panel-heading">
+        <header className={`tab-panel-heading tab-panel-heading-${active.id}`}>
           <h2>{active.label}</h2>
           <span>{active.kicker}</span>
         </header>
@@ -527,18 +535,22 @@ function ForexView({ data }) {
           <p>Historical exchange rates with brokerage funding and documented currency purchases marked.</p>
         </div>
         <span>
-          {forex.funding_count || 0} funding · {forex.purchase_count || 0} purchases
+          {forex.funding_count || 0} funding · {forex.withdrawal_count || 0} withdrawals
           {' · '}
           {money(
-            forex.total_reporting_amount,
+            forex.net_external_reporting_amount ?? forex.total_reporting_amount,
             data.reporting_currency,
             2,
-          )} valued
+          )} net external capital
+          {' · '}
+          {forex.purchase_count || 0} FX purchases excluded
         </span>
       </header>
       <ForexActivityChart
         chart={data.charts.fxDeposits || {}}
-        activity={funding}
+        activity={funding.filter(
+          (event) => event.currency !== data.reporting_currency,
+        )}
         reportingCurrency={data.reporting_currency}
       />
       {funding.length ? (
@@ -550,7 +562,8 @@ function ForexView({ data }) {
         >
           <table className="ledger forex-ledger">
             <caption>
-              Latest {recentFunding.length} of {funding.length} recorded events · newest to oldest
+              Latest {recentFunding.length} of {funding.length} activities · newest to oldest
+              {' · '}FX purchases do not change cumulative funding
             </caption>
             <thead>
               <tr>
@@ -567,7 +580,13 @@ function ForexView({ data }) {
               {recentFunding.map((event, index) => (
                 <tr key={`${event.date}-${event.currency}-${index}`}>
                   <td className="muted">{event.date}</td>
-                  <td>{event.kind === 'currency_purchase' ? 'Purchase' : 'Funding'}</td>
+                  <td>
+                    {event.kind === 'currency_purchase'
+                      ? 'FX purchase'
+                      : event.kind === 'brokerage_withdrawal'
+                        ? 'Withdrawal'
+                        : 'Funding'}
+                  </td>
                   <td className="num">
                     {event.amount == null || !event.currency
                       ? '—'
@@ -586,6 +605,7 @@ function ForexView({ data }) {
                   </td>
                   <td className="num forex-cumulative-cell">
                     {money(event.cumulative_usd_amount, 'USD', 2)}
+                    {event.kind === 'currency_purchase' && <small>unchanged</small>}
                   </td>
                   <td className="num forex-cumulative-cell">
                     {money(
@@ -593,6 +613,7 @@ function ForexView({ data }) {
                       data.reporting_currency,
                       2,
                     )}
+                    {event.kind === 'currency_purchase' && <small>unchanged</small>}
                   </td>
                 </tr>
               ))}
@@ -765,6 +786,29 @@ function App() {
     )
   }
 
+  const stocksReportingValue = completePositionTotal(data.positions, 'market_reporting')
+  const stocksUsdValue = completePositionTotal(data.positions, 'market_usd')
+  const stocksUsdMovement = completePositionTotal(data.positions, 'day_change_usd')
+  const previousStocksUsdValue = stocksUsdValue == null || stocksUsdMovement == null
+    ? null
+    : stocksUsdValue - stocksUsdMovement
+  const stocksUsdMovementPct = previousStocksUsdValue
+    ? stocksUsdMovement / previousStocksUsdValue * 100
+    : null
+  const stocksMovementTone = stocksUsdMovement == null || stocksUsdMovement === 0
+    ? 'neutral'
+    : stocksUsdMovement > 0 ? 'positive' : 'negative'
+  const marketsKicker = data.positions.length
+    ? (
+      <>
+        · {money(stocksReportingValue, data.reporting_currency)} ({money(stocksUsdValue, 'USD')}) ·{' '}
+        <span className={`market-summary-movement market-summary-${stocksMovementTone}`}>
+          {signedMoney(stocksUsdMovement)} ({signedPercent(stocksUsdMovementPct)})
+        </span>
+      </>
+    )
+    : '· No open positions'
+
   const tabs = [
     {
       id: 'overview',
@@ -787,7 +831,7 @@ function App() {
     {
       id: 'markets',
       label: 'Markets',
-      kicker: `${data.positions.length} open positions`,
+      kicker: marketsKicker,
       content: <Markets data={data} />,
     },
     {
@@ -818,16 +862,17 @@ function App() {
             {refreshed ? 'Updating market data' : 'Live ledger'}
           </span>
         </div>
-        <p className="as-of">As of {data.as_of}</p>
-        <h1>{money(data.overview.total, data.reporting_currency)}</h1>
+        <div className="masthead-summary">
+          <p className="as-of">As of {data.as_of}</p>
+          <h1>{money(data.overview.total, data.reporting_currency)}</h1>
+          <div className="freshness-strip" aria-label="Data freshness">
+            <div><span>Financial sync</span><strong>{timeLabel(data.freshness.last_sync_at)}</strong></div>
+            <div><span>Market observed</span><strong>{timeLabel(data.freshness.market_observed_at)}</strong></div>
+            <div><span>Refresh cadence</span><strong>Every 30 minutes</strong></div>
+            <button onClick={requestRefresh} disabled={refreshed}>{refreshed ? 'Refreshing…' : 'Refresh now'}</button>
+          </div>
+        </div>
       </header>
-
-      <div className="freshness-strip">
-        <div><span>Financial sync</span><strong>{timeLabel(data.freshness.last_sync_at)}</strong></div>
-        <div><span>Market observed</span><strong>{timeLabel(data.freshness.market_observed_at)}</strong></div>
-        <div><span>Refresh cadence</span><strong>Every 30 minutes</strong></div>
-        <button onClick={requestRefresh} disabled={refreshed}>{refreshed ? 'Refreshing…' : 'Refresh now'}</button>
-      </div>
       {error && <p className="notice">The last background read failed; showing the most recent view.</p>}
 
       <DashboardTabs tabs={tabs} activeTab={activeTab} onChange={selectTab} />

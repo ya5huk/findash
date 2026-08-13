@@ -26,6 +26,10 @@ from findash_core.dividends import (
     project_between,
 )
 from findash_core.models import AccountState, ZERO
+from findash_core.movement_classification import (
+    fx_conversion_documents,
+    is_internal_fx_transaction,
+)
 from findash_core.dashboard_charts import DashboardChartsMixin
 
 
@@ -328,21 +332,17 @@ class DashboardModelBuilder(DashboardChartsMixin):
                     # external deposit was acquired. Only linked FX-conversion
                     # evidence may be presented as an actual applied rate.
                     "rate_is_actual": False,
-                    "kind": "brokerage_funding",
+                    "kind": (
+                        "brokerage_funding"
+                        if row.native_amount_minor > 0
+                        else "brokerage_withdrawal"
+                    ),
                 }
             )
         return result
 
     def _currency_purchase_rows(self, as_of: str) -> list[dict]:
-        documents = {
-            int(row["id"]): dict(row)
-            for row in self.con.execute(
-                """SELECT id,doc_date FROM documents
-                    WHERE drive_path LIKE 'fx-conversions/%'
-                      AND doc_date<=?""",
-                (as_of,),
-            )
-        }
+        documents = fx_conversion_documents(self.con, as_of=as_of)
         represented: set[int] = set()
         rows: list[dict] = []
         for account in self.accounting.accounts(as_of, include_closed=True):
@@ -350,7 +350,7 @@ class DashboardModelBuilder(DashboardChartsMixin):
                 continue
             for transaction in self.accounting.transactions(account["id"], as_of):
                 source_doc_id = transaction.get("source_doc_id")
-                if source_doc_id not in documents:
+                if not is_internal_fx_transaction(transaction, documents):
                     continue
                 amount_minor = _decimal(transaction["amount_minor"])
                 currency = canonical_currency(transaction["currency"])
@@ -365,7 +365,8 @@ class DashboardModelBuilder(DashboardChartsMixin):
                     self.reporting_currency,
                     transaction["date"],
                 )
-                represented.add(int(source_doc_id))
+                if source_doc_id is not None:
+                    represented.add(int(source_doc_id))
                 rows.append(
                     {
                         "date": transaction["date"],
@@ -451,12 +452,12 @@ class DashboardModelBuilder(DashboardChartsMixin):
         return rows
 
     def _forex_activity(self, deposits: list[dict], as_of: str) -> dict:
-        rows = [
+        external_rows = [
             dict(row)
             for row in deposits
-            if row["amount"] > 0
-            and row["currency"] != self.reporting_currency
+            if row["amount"] != 0
         ]
+        rows = list(external_rows)
         rows.extend(self._currency_purchase_rows(as_of))
         rows.sort(
             key=lambda row: (
@@ -469,11 +470,19 @@ class DashboardModelBuilder(DashboardChartsMixin):
         cumulative_reporting_amount = ZERO
         cumulative_usd_amount = ZERO
         for row in reversed(rows):
-            if row["reporting_amount"] is not None:
+            external_transfer = row["kind"] in {
+                "brokerage_funding",
+                "brokerage_withdrawal",
+            }
+            if external_transfer and row["reporting_amount"] is not None:
                 cumulative_reporting_amount += Decimal(
                     str(row["reporting_amount"])
                 )
-            if row["currency"] == "USD" and row["amount"] is not None:
+            if (
+                external_transfer
+                and row["currency"] == "USD"
+                and row["amount"] is not None
+            ):
                 cumulative_usd_amount += Decimal(str(row["amount"]))
             row["cumulative_reporting_amount"] = float(
                 cumulative_reporting_amount
@@ -487,7 +496,7 @@ class DashboardModelBuilder(DashboardChartsMixin):
                 "actual_rate_count": 0,
             }
         )
-        for row in rows:
+        for row in external_rows:
             if (
                 row["currency"] is None
                 or row["amount"] is None
@@ -527,11 +536,16 @@ class DashboardModelBuilder(DashboardChartsMixin):
             "rows": rows,
             "summary": summaries,
             "event_count": len(rows),
+            "external_event_count": len(external_rows),
+            "activity_count": len(rows),
             "valued_count": sum(
-                row["reporting_amount"] is not None for row in rows
+                row["reporting_amount"] is not None for row in external_rows
             ),
             "funding_count": sum(
                 row["kind"] == "brokerage_funding" for row in rows
+            ),
+            "withdrawal_count": sum(
+                row["kind"] == "brokerage_withdrawal" for row in rows
             ),
             "purchase_count": sum(
                 row["kind"] == "currency_purchase" for row in rows
@@ -540,7 +554,17 @@ class DashboardModelBuilder(DashboardChartsMixin):
                 sum(
                     (
                         Decimal(str(row["reporting_amount"]))
-                        for row in rows
+                        for row in external_rows
+                        if row["reporting_amount"] is not None
+                    ),
+                    ZERO,
+                )
+            ),
+            "net_external_reporting_amount": float(
+                sum(
+                    (
+                        Decimal(str(row["reporting_amount"]))
+                        for row in external_rows
                         if row["reporting_amount"] is not None
                     ),
                     ZERO,

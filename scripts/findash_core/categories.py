@@ -39,7 +39,9 @@ _CATEGORY_FLOW_TYPES: Mapping[str, str] = {
     "withdrawal": "transfer",
     "pension_deposit": "transfer",
     "study_fund_deposit": "transfer",
-    "fx": "transfer",
+    # Internal FX reallocates cash already inside the same account. It is never
+    # external capital, even in legacy rows that predate explicit flow_type.
+    "fx": "investment",
     "securities_buy": "investment",
     "securities_sell": "investment",
     "realized_gain": "investment",

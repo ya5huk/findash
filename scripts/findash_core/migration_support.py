@@ -8,7 +8,7 @@ import sqlite3
 from typing import Callable
 
 
-LATEST_SCHEMA_VERSION = 13
+LATEST_SCHEMA_VERSION = 14
 
 
 class MigrationError(RuntimeError):
@@ -261,6 +261,71 @@ def relationship_violation_counts(
                        )""",
                 )
             )
+    if _table_exists(connection, "inferred_transfer_links"):
+        checks.append(
+            (
+                "inferred_transfer_links",
+                """SELECT COUNT(*) FROM inferred_transfer_links AS link
+                   WHERE NOT EXISTS (
+                     SELECT 1
+                       FROM canonical_events AS outflow
+                       JOIN canonical_events AS inflow
+                         ON inflow.id=link.inflow_event_id
+                       JOIN accounts AS source_account
+                         ON source_account.id=outflow.account_id
+                       JOIN accounts AS destination_account
+                         ON destination_account.id=inflow.account_id
+                       JOIN balances AS before_balance
+                         ON before_balance.id=link.before_balance_id
+                       JOIN balances AS after_balance
+                         ON after_balance.id=link.after_balance_id
+                      WHERE outflow.id=link.outflow_event_id
+                        AND outflow.event_type='cash'
+                        AND outflow.flow_type='transfer'
+                        AND outflow.status='confirmed'
+                        AND outflow.amount_minor<0
+                        AND EXISTS (
+                          SELECT 1 FROM event_evidence AS source_evidence
+                           WHERE source_evidence.canonical_event_id=outflow.id
+                        )
+                        AND inflow.event_type='cash'
+                        AND inflow.flow_type='transfer'
+                        AND inflow.status='confirmed'
+                        AND inflow.amount_minor>0
+                        AND inflow.amount_minor=-outflow.amount_minor
+                        AND inflow.currency=outflow.currency
+                        AND inflow.occurred_on=outflow.occurred_on
+                        AND source_account.id<>destination_account.id
+                        AND source_account.kind<>'brokerage'
+                        AND destination_account.kind='brokerage'
+                        AND before_balance.account_id=inflow.account_id
+                        AND after_balance.account_id=inflow.account_id
+                        AND before_balance.currency=inflow.currency
+                        AND after_balance.currency=inflow.currency
+                        AND before_balance.component='cash_' || lower(inflow.currency)
+                        AND after_balance.component=before_balance.component
+                        AND before_balance.as_of<inflow.occurred_on
+                        AND inflow.occurred_on<=after_balance.as_of
+                        AND EXISTS (
+                          SELECT 1
+                            FROM balance_evidence AS before_evidence
+                            JOIN balance_evidence AS after_evidence
+                              ON after_evidence.account_feed_id=
+                                 before_evidence.account_feed_id
+                            JOIN account_feeds AS feed
+                              ON feed.id=before_evidence.account_feed_id
+                           WHERE before_evidence.canonical_balance_id=
+                                 before_balance.id
+                             AND after_evidence.canonical_balance_id=
+                                 after_balance.id
+                             AND before_evidence.account_snapshot_complete=1
+                             AND after_evidence.account_snapshot_complete=1
+                             AND feed.account_id=inflow.account_id
+                             AND feed.is_active=1
+                        )
+                   )""",
+            )
+        )
     if _trigger_exists(connection, "balance_evidence_require_provenance_insert"):
         checks.extend(
             (

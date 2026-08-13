@@ -141,6 +141,44 @@ The command verifies every guard inside one immediate transaction, preserves the
 source documents, validates the resulting schema and relationships, and emits only
 aggregate counts. It does not enable `DELETE` in normal write batches.
 
+## Reviewed inferred brokerage funding
+
+Use the third fixed operation only after two complete per-currency brokerage cash
+snapshots from the same active feed reveal a positive residual, and confirmed
+bank-side transfers uniquely explain that entire residual. Private recipient and
+reference evidence must identify the brokerage. Amount/date similarity alone is not
+enough.
+
+```json
+{
+  "operation": "infer_brokerage_funding",
+  "outflow_event_ids": [0],
+  "brokerage_account_id": 0,
+  "before_balance_id": 0,
+  "after_balance_id": 0,
+  "confirmed_bank_destination": true,
+  "confirmed_no_competing_cash_explanation": true,
+  "confirmed_complete_snapshot_pair": true
+}
+```
+
+Replace every `0` with a privately reviewed local id. Several bank outflows may
+share one snapshot interval; list all of them only when their sum is the full
+residual. Run:
+
+```bash
+python3 scripts/findash_db.py infer-brokerage-funding inbox/staging/operations/<request>.json
+```
+
+The operation requires confirmed negative transfer events with source evidence,
+same-currency complete brokerage cash anchors from one active feed, chronological
+containment, and an exact residual after confirmed cash events and trade settlements
+(apart from the existing fractional-trade minor-unit tolerance). It atomically
+creates equal positive brokerage transfers and durable `inferred_transfer_links`.
+Re-running the same request is a no-op. A partial snapshot, unexplained remainder,
+missing bank evidence, competing destination, or already-linked transfer fails the
+whole operation.
+
 Always delete the request after the command finishes, whether it succeeded or failed:
 
 ```bash

@@ -64,6 +64,14 @@ Write each normalized observation in one transaction, in dependency order: upser
 
 A trade changes both holdings and brokerage cash. When no posted cash observation exists, accounting derives that cash leg from the confirmed canonical trade. When a feed separately reports the posted settlement cash, retain it as a confirmed canonical cash event and add `trade_cash_links` rows to every canonical fill it covers. One cash event can deliberately cover several fills, but one trade cannot be split across several canonical cash events: aggregate split source rows into one reviewed canonical settlement or leave them unlinked until their economics are unambiguous.
 
+An owned-account bank outflow may also prove a missing brokerage funding leg.
+`inferred_transfer_links` joins the confirmed negative bank transfer, its equal and
+opposite positive brokerage transfer, and the complete before/after per-currency
+cash snapshots used to reconcile the interval. Both snapshots must come from the
+same active feed and be marked complete. The fixed gateway operation recomputes all
+known cash and trade movements before it permits the link; ordinary ingestion must
+not insert an unproven balancing event.
+
 The link is an exact reviewed assertion. Cash and trades must share account and currency, be confirmed, and the cash date must be on or after every covered trade date. Its signed amount must equal the linked fills' economics—buy `= -(quantity × price_minor) - fees_minor`, sell `= quantity × price_minor - fees_minor`—within `max(1, number of fills)` minor units for fractional-fill rounding. Amount/date similarity alone never creates a link. Once linked, the events' dates, amounts, security, side, quantity, price, fees, currency, component, status, and other accounting identity are immutable; notes may still be edited. A correction requires explicit review rather than changing facts underneath the link. An unlinked cash event remains a separate movement. A linked trade stays derived before the posted cash date; from that date onward the explicit cash replaces it, so later evidence never rewrites earlier history.
 
 The same principle applies to snapshots. `balances` and `positions` hold chosen anchors; `balance_evidence` and `position_evidence` retain every source observation. A second feed is corroboration or a reconciliation conflict, not another asset.
@@ -81,6 +89,13 @@ Locked-account component snapshots are coherent sets too: pension requires all
 three documented components on one date, and a study fund requires both. A
 complete component set replaces an older plain total; a newer plain total or an
 incomplete later breakdown does not get silently displaced by stale/partial detail.
+Between statements, valuation adds later exact fund movements and, when exactly
+one active account of the matching kind/currency exists, employee + employer
+contributions from later `payslips`. Payroll roll-forward is calculated rather than
+materialized as a transaction, is marked estimated because market return is
+unknown, and is reset by the next observed fund snapshot. Exact post-snapshot fund
+movement coverage takes precedence so the same payroll contribution is not counted
+twice. Ambiguous multiple-policy routing produces a warning and no estimate.
 
 Legacy `transactions` and `trades` remain valid with null event links. An isolated explicit investment-cash row still applies. Where legacy investment cash overlaps eligible raw trade history, calculations preserve the old trade-derived treatment and warn because those rows do not prove which cash and trade belong together; migration never invents `trade_cash_links`. New ingestion creates the source identity, canonical event, evidence link, and consistent raw fact atomically. Copy a cash observation's normalized `component` onto its canonical event; this keeps pension/cash sub-ledgers intact across feeds. This makes migration incremental instead of rewriting historical financial facts automatically.
 
@@ -139,7 +154,11 @@ WHERE account_id=<brokerage_account_id>
 ORDER BY occurred_on;
 ```
 
-The final example is intentionally account-local: cross-account transfer pairing is not yet represented by a dedicated link, so application code should use normalized signed external flows for performance calculations.
+The final example is intentionally account-local. Strongly proven inferred funding
+has an explicit cross-account `inferred_transfer_links` relationship; ordinary
+transfers without that evidence remain separate account-local events. Application
+code therefore continues to use normalized signed external flows for performance
+calculations.
 
 ## Schema lifecycle
 
@@ -169,3 +188,11 @@ Migration v10 makes complete-account snapshots explicit and prevents one trade f
 Migration v11 audits raw-pointer/evidence consistency and linked settlement chronology/economics before upgrading. It then enforces those relationships on every write, makes linked economics immutable, and restores ordinary lookup indexes that may be absent from very old databases. Failures report only relationship names and counts, never financial rows.
 
 Migration v12 adds the cached `security_distributions` market-data table and its per-security `security_distribution_refreshes` coverage state. Its positive rational integer representation preserves exact sub-minor per-share amounts; source identities are stable and provider-scoped. These rows support modeled dividend entitlement and projections, not claims about cash actually received.
+
+Migration v13 adds append-only security-price and FX-rate observations while
+retaining deterministic daily cache rows for valuation.
+
+Migration v14 adds guarded `inferred_transfer_links`. It permits a positive
+brokerage transfer only when confirmed bank evidence and two complete cash
+snapshots from one active feed reconcile the full interval. Linked event economics
+and snapshot identities become immutable.

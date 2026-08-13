@@ -19,6 +19,10 @@ from typing import Any
 
 from findash_core.corrections import CorrectionError, remove_incorrect_balance
 from findash_core.db import connect_db
+from findash_core.funding_reconciliation import (
+    FundingReconciliationError,
+    infer_brokerage_funding,
+)
 from findash_core.migrations import MigrationError, require_current_schema
 from findash_core.reconciliation import (
     ReconciliationError,
@@ -189,6 +193,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="remove one fully guarded, explicitly reviewed balance",
     )
     correction.add_argument("file", type=_request_path)
+    funding = sub.add_parser(
+        "infer-brokerage-funding",
+        help="confirm bank transfers proven by complete brokerage cash snapshots",
+    )
+    funding.add_argument("file", type=_request_path)
     sub.add_parser("integrity", help="run foreign-key and integrity checks")
     return parser.parse_args(argv)
 
@@ -217,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.file.read_text(encoding="utf-8"))
             counts = remove_incorrect_balance(DB, payload)
             print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
+        elif args.command == "infer-brokerage-funding":
+            payload = json.loads(args.file.read_text(encoding="utf-8"))
+            counts = infer_brokerage_funding(DB, payload)
+            print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
         else:
             con = connect_db(DB, readonly=True, migrate=False)
             try:
@@ -233,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         GatewayError,
         CorrectionError,
+        FundingReconciliationError,
         MigrationError,
         ReconciliationError,
         json.JSONDecodeError,

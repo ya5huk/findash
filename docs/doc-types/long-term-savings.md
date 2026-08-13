@@ -19,10 +19,12 @@
   three components. A partial/cropped breakdown is evidence, but it must not
   displace a newer stated total in dashboard valuation.
 - For valuation, carry recorded deposits and withdrawals after the latest
-  coherent snapshot as known flows. Before the first snapshot, those flows are
-  a partial lower-bound value rather than zero. Investment return remains
-  unknown between statements, and every later statement reanchors the account
-  to its reported market value.
+  coherent snapshot as known flows. Also add employee + employer contributions
+  from later payslips when exactly one active pension account in that currency
+  makes the destination unambiguous. Before the first snapshot, these flows are
+  a partial lower-bound value rather than zero. The payslip roll-forward excludes
+  investment return, is labelled estimated, and every later statement reanchors
+  the account to its reported market value.
 
 ### Training fund statement (e.g. Harel)
 
@@ -34,6 +36,8 @@
   withdrawal became available.
 - As with pension, the two components form one coherent dated snapshot; do not
   treat one visible component as a replacement for a reported account total.
+- Later payslip employee + employer study-fund contributions roll the displayed
+  value forward under the same single-account and reanchoring rules as pension.
 
 ### Pension movements report
 

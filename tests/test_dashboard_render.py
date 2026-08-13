@@ -800,31 +800,37 @@ class DashboardRenderTest(unittest.TestCase):
         self.assertEqual(len(external), 3)
         self.assertEqual([row["date"] for row in forex["rows"]], [
             "2026-01-04",
+            "2026-01-04",
             "2026-01-03",
             "2026-01-02",
             "2025-12-31",
         ])
         self.assertEqual(forex["rows"][0]["kind"], "currency_purchase")
         self.assertTrue(forex["rows"][0]["rate_is_actual"])
-        self.assertEqual(forex["rows"][1]["rate_source"], "yahoo")
-        self.assertFalse(forex["rows"][1]["rate_is_actual"])
-        self.assertEqual(forex["rows"][3]["kind"], "currency_purchase")
-        self.assertIsNone(forex["rows"][3]["amount"])
-        self.assertEqual(forex["event_count"], 4)
+        self.assertEqual(forex["rows"][1]["kind"], "brokerage_withdrawal")
+        self.assertEqual(forex["rows"][2]["rate_source"], "yahoo")
+        self.assertFalse(forex["rows"][2]["rate_is_actual"])
+        self.assertEqual(forex["rows"][4]["kind"], "currency_purchase")
+        self.assertIsNone(forex["rows"][4]["amount"])
+        self.assertEqual(forex["event_count"], 5)
+        self.assertEqual(forex["external_event_count"], 3)
+        self.assertEqual(forex["activity_count"], 5)
         self.assertEqual(forex["valued_count"], 3)
         self.assertEqual(forex["funding_count"], 2)
+        self.assertEqual(forex["withdrawal_count"], 1)
         self.assertEqual(forex["purchase_count"], 2)
-        self.assertEqual(forex["total_reporting_amount"], 1255.0)
+        self.assertEqual(forex["total_reporting_amount"], 885.0)
+        self.assertEqual(forex["net_external_reporting_amount"], 885.0)
         self.assertEqual(
             [
                 row["cumulative_reporting_amount"]
                 for row in forex["rows"]
             ],
-            [1255.0, 1070.0, 350.0, 0.0],
+            [885.0, 885.0, 1070.0, 350.0, 0.0],
         )
         self.assertEqual(
             [row["cumulative_usd_amount"] for row in forex["rows"]],
-            [350.0, 300.0, 100.0, 0.0],
+            [250.0, 250.0, 300.0, 100.0, 0.0],
         )
         self.assertEqual(
             forex["summary"],
@@ -832,12 +838,58 @@ class DashboardRenderTest(unittest.TestCase):
                 {
                     "currency": "USD",
                     "count": 3,
-                    "foreign_amount": 350.0,
-                    "reporting_amount": 1255.0,
-                    "weighted_rate": 1255.0 / 350.0,
-                    "actual_rate_count": 1,
+                    "foreign_amount": 250.0,
+                    "reporting_amount": 885.0,
+                    "weighted_rate": 885.0 / 250.0,
+                    "actual_rate_count": 0,
                 }
             ],
+        )
+
+    def test_internal_fx_semantics_do_not_depend_on_vault_folder(self):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.executescript(SCHEMA)
+        account_id = con.execute(
+            """INSERT INTO accounts(name,kind,institution,currency)
+               VALUES('Sample brokerage','brokerage','Broker','USD') RETURNING id"""
+        ).fetchone()[0]
+        conversion_doc = con.execute(
+            """INSERT INTO documents(
+                   drive_id,drive_path,filename,doc_type,doc_date
+               ) VALUES('fx-typed','investments/2026/sample.png','sample.png',
+                        'fx_conversion','2026-01-03') RETURNING id"""
+        ).fetchone()[0]
+        con.executemany(
+            """INSERT INTO transactions(
+                   account_id,date,amount_minor,currency,category,flow_type,
+                   source_doc_id
+               ) VALUES(?,?,?,?,?,?,?)""",
+            [
+                (
+                    account_id, "2026-01-02", 10_000, "USD", "fx",
+                    "transfer", None,
+                ),
+                (
+                    account_id, "2026-01-03", 20_000, "USD", "deposit",
+                    None, conversion_doc,
+                ),
+            ],
+        )
+        con.execute(
+            """INSERT INTO fx_rates(date,base_currency,quote_currency,rate,source)
+               VALUES('2026-01-02','USD','ILS',3.5,'document')"""
+        )
+
+        builder = DashboardModelBuilder(con)
+        external = builder.accounting.external_flows("2026-01-03")
+        forex = builder._forex_activity([], "2026-01-03")
+
+        self.assertEqual(external, [])
+        self.assertEqual(forex["purchase_count"], 2)
+        self.assertEqual(forex["external_event_count"], 0)
+        self.assertTrue(
+            all(row["kind"] == "currency_purchase" for row in forex["rows"])
         )
 
     def test_dividend_chart_keeps_non_payment_calendar_months(self):

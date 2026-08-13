@@ -181,6 +181,15 @@ def _require_identity_guards(connection: sqlite3.Connection) -> None:
                 "canonical_events_trade_cash_identity_update",
             }
         )
+    if _table_exists(connection, "inferred_transfer_links"):
+        required.update(
+            {
+                "inferred_transfer_links_valid_insert",
+                "inferred_transfer_links_valid_update",
+                "canonical_events_inferred_transfer_identity_update",
+                "balances_inferred_transfer_identity_update",
+            }
+        )
     required.update(
         {
             "balance_evidence_require_provenance_insert",
@@ -442,6 +451,35 @@ def _validate_event_resolutions(
             "event resolutions failed ownership/type validation "
             f"(invalid={invalid}, without_source_evidence={without_evidence}, "
             f"without_target_evidence={targets_without_evidence}, linked={linked})"
+        )
+
+
+def _reject_inferred_transfer_dependencies(
+    connection: sqlite3.Connection, account_id: int
+) -> None:
+    if not _table_exists(connection, "inferred_transfer_links"):
+        return
+    linked = int(
+        connection.execute(
+            """SELECT COUNT(*)
+                 FROM inferred_transfer_links AS link
+                 JOIN canonical_events AS outflow
+                   ON outflow.id=link.outflow_event_id
+                 JOIN canonical_events AS inflow
+                   ON inflow.id=link.inflow_event_id
+                 JOIN balances AS before_balance
+                   ON before_balance.id=link.before_balance_id
+                 JOIN balances AS after_balance
+                   ON after_balance.id=link.after_balance_id
+                WHERE outflow.account_id=? OR inflow.account_id=?
+                   OR before_balance.account_id=? OR after_balance.account_id=?""",
+            (account_id, account_id, account_id, account_id),
+        ).fetchone()[0]
+    )
+    if linked:
+        raise ReconciliationError(
+            "account has inferred-transfer dependencies that require separate review "
+            f"(links={linked})"
         )
 
 
@@ -721,6 +759,9 @@ def _run_reconciliation(
         raise ReconciliationError("source account cannot be closed on the requested date")
     _require_identity_guards(connection)
     _relationship_error(connection, phase="existing")
+    _reject_inferred_transfer_dependencies(
+        connection, request.source_account_id
+    )
     _validate_collisions(connection, request)
     _validate_anchor_resolutions(
         connection,

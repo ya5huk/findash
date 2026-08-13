@@ -78,6 +78,13 @@ Otherwise process it:
 - Insert rows into the right tables (see [`docs/sqlite-schema.md`](../../docs/sqlite-schema.md)). Document-sourced rows always cite the `documents` row. Every new transaction/trade observation gets a stable source key from the document identity + source row, remains as a raw fact, and creates or supports one canonical economic event through `event_evidence`.
 - **Count economics once, keep evidence forever.** A wrapper statement may describe a trade already seen through IBKR. Match account, security, side, quantity, price, currency, dates, fees and source ids; exact amount/date alone is not proof. Link high-confidence matches to the existing canonical event instead of deleting either raw row. Mark ambiguity for review rather than guessing.
 - Set `transactions.flow_type` with judgment for every new row (`expense | income | transfer | investment | tax | refund | other`). `category` remains descriptive open vocabulary; calculations do not infer accounting meaning from an arbitrary category name. Copy the raw cash observation's normalized `component` to its canonical cash event; canonical trades keep `component=NULL`.
+- **Payslip fund roll-forward is calculated, not a fabricated transaction.** Preserve
+  the employee and employer pension/study-fund columns exactly. The accounting
+  engine adds later payslip contributions to the latest fund snapshot only when
+  one active account of that kind/currency makes routing unambiguous, and the next
+  fund statement reanchors it. Do not insert duplicate fund transactions from the
+  payslip merely to update valuation; actual fund movement reports remain the
+  authoritative transaction source.
 - **Link posted trade cash explicitly.** A confirmed canonical trade derives its brokerage-cash leg unless a confirmed canonical cash event is attached through `trade_cash_links`. When a source separately reports settlement cash, retain both raw observations and both canonical events, then link the cash event to every fill it covers only after account, currency, full trade economics, dates, fees, source ids and aggregation shape reconcile. One cash row may cover several fills. Never infer this link from amount/date alone. Leave ambiguous cash `needs_review` and unlinked so the confirmed trade remains the calculation source.
 - **Use judgment** when categorizing transactions and matching cross-document events. Read [`docs/doc-types/classification.md`](../../docs/doc-types/classification.md) "Judgment calls" before doing any classification work.
 - **Closing balance:** for bank statements, read the running-balance column on the last row (Hapoalim XLSX → יתרה בש"ח). Do NOT sum the in-window transactions and call that the balance. Store one canonical balance anchor and retain this source observation in `balance_evidence`. Every balance/position evidence row must cite at least one of `account_feed_id` or `source_doc_id`; a row with neither is invalid. Another feed reporting the same account/date/component is corroboration or a reconciliation conflict, never another balance to sum. If no running balance is visible, skip it and note why.
@@ -90,6 +97,40 @@ Otherwise process it:
   refresh. If a document shows both currency amounts without naming the rate,
   derive it from those private values and write it the same way.
 - **One atomic commit, then delete.** Put the document, feed/source identities, raw facts, canonical events/evidence and snapshots for one source into one ordered `findash_db.py apply` request. Insert the `documents` row first and resolve its id through a stable-key subquery in later statements. The gateway enables foreign keys and commits the full batch or rolls it back. Delete the operation request after the command; delete source staging through `python3 scripts/staging_files.py delete <path> [<sidecar>]` only after a successful commit. On failure, leave the source file in staging for retry.
+
+### 4a. Reconcile bank transfers into brokerage funding
+
+After bank ingestion and brokerage snapshot writes are complete, inspect each pair
+of consecutive complete per-currency brokerage cash snapshots reported by the same
+active feed. Reconstruct the interval from confirmed cash events and trade
+settlements. Market-value or net-liquidation changes are never cash evidence.
+
+When the remaining positive cash residual is explained exactly (allowing only the
+existing fractional-trade minor-unit tolerance) by one or more confirmed bank-side
+outflows, infer the brokerage inflow only if all of these hold:
+
+- each bank event is a confirmed negative `transfer` with durable source evidence;
+- its private recipient/reference evidence identifies this brokerage, rather than
+  merely sharing an amount and date;
+- bank currency matches the brokerage cash component, every event falls strictly
+  after the earlier snapshot and no later than the newer snapshot, and their sum
+  explains the full residual;
+- trades, posted settlement cash, fees, taxes, interest, dividends, FX, withdrawals,
+  corporate actions, and all other known cash movements leave no competing
+  explanation; and
+- both snapshots are marked `account_snapshot_complete=1` by the same active feed.
+
+Use the fixed `infer-brokerage-funding` operation in
+[`docs/database-operations.md`](../../docs/database-operations.md). It revalidates
+the cash arithmetic, creates one positive confirmed brokerage transfer per bank
+outflow, and records `inferred_transfer_links` to the bank events and both snapshot
+anchors. Re-running the same request is a no-op. Delete its private request file
+afterward.
+
+Do not infer from a total portfolio bump, a partial/one-sided snapshot, an unlinked
+legacy bank row, amount/date similarity alone, or multiple plausible destinations.
+Leave those residuals unrecorded and add one count-only review warning. Never create
+a balancing entry merely to make snapshots reconcile.
 
 ### 5. Refresh price + FX cache
 

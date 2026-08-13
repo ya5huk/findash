@@ -107,6 +107,16 @@ Write positions/cash observations to the mapped account. They are **anchors and 
   connector reports absolute market value, apply the position sign once before
   writing `positions`/`position_evidence`.
 - **Cash:** retain each observation in `balance_evidence`; choose/update one canonical `balances` anchor for `(account, date, cash component)`. The NULL-component uniqueness fix applies to plain balances too.
+- **Infer strongly proven funding:** after writing a complete snapshot, compare it
+  with the previous complete per-currency cash snapshot from the same active feed.
+  Reconstruct trades and every confirmed cash movement between them. If the exact
+  remaining positive residual is uniquely explained by confirmed bank-side
+  transfers whose recipient/reference evidence identifies this brokerage, use the
+  fixed `findash_db.py infer-brokerage-funding` operation documented in
+  `docs/database-operations.md`. It creates the positive brokerage legs and retains
+  links to both bank events and both snapshots. Never infer from net liquidation,
+  partial snapshots, amount/date alone, an unlinked legacy bank row, or a residual
+  with another plausible cause.
 - **Reconcile:** compare (a) the snapshot's per-symbol quantities against the trade-derived holdings on the mapped account, and (b) `get_account_summary` net-liquidation against Σ(position market values) + Σ(cash), in one currency. Material drift (≳1% — a missed trade, a corporate action, or history beyond the connector window) → **note it** in the summary and one line in `accounts.notes`. **Never** insert a balancing/plug row.
   Also guard against **double-feeding**: if another account's holdings substantially overlap the
   IBKR symbols/quantities (the same portfolio arriving twice — e.g. the wrapper broker's

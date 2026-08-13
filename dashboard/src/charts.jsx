@@ -449,7 +449,9 @@ export function ForexActivityChart({
         }
         const kind = event.kind === 'currency_purchase'
           ? 'Currency purchase'
-          : 'Brokerage funding'
+          : event.kind === 'brokerage_withdrawal'
+            ? 'Brokerage withdrawal'
+            : 'Brokerage funding'
         return [
           event.amount == null || !event.currency
             ? `${kind} · amount unavailable`

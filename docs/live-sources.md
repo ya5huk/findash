@@ -120,6 +120,13 @@ them to the same logical account only when the evidence says they are one econom
 - **Funding an IBKR account is a transfer, not an expense.** Money moving from a bank into IBKR is
   `category='transfer', flow_type='transfer'`. The bank and brokerage legs are separate canonical account
   events; consolidated spending counts neither.
+- **Complete cash snapshots may prove a missing brokerage leg.** Reconstruct one
+  currency between two complete snapshots from the same active feed. When the full
+  unexplained positive residual is uniquely matched to confirmed bank outflows whose
+  recipient/reference evidence names this brokerage, create the brokerage inflow
+  through the guarded `infer-brokerage-funding` operation. The resulting
+  `inferred_transfer_links` retain the bank event and both snapshot anchors. A
+  portfolio-value bump, partial cash read, or amount/date match alone is never proof.
 - **Cash-snapshot residuals can nominate dividends, not prove them.** Between two complete per-currency
   cash snapshots, advance the earlier anchor through confirmed cash events and trade settlements. Market
   price changes never affect cash. A remaining positive residual that aligns with modeled distributions,
