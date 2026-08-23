@@ -17,7 +17,6 @@ REQUIRED_KEYS = {
     "drive": ("root_folder_id",),
     "hapoalim": ("user_code", "password"),
     "cal": ("username", "password"),
-    "telegram": ("bot_token", "chat_id"),
 }
 OPTIONAL_VALUE_SECTIONS = ("pdf-passwords", "ibkr")
 

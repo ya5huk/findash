@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import os
 from pathlib import Path
 import sqlite3
 import sys
-import tempfile
 import unittest
 
 
@@ -14,12 +11,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 SCHEMA = (ROOT / "scripts" / "init-db.sql").read_text(encoding="utf-8")
 
 from findash_core.dashboard_model import DashboardModelBuilder  # noqa: E402
-from findash_core.dashboard_html import _payslips as render_payslips_table  # noqa: E402
-from render_dashboard import render_dashboard  # noqa: E402
-from findash_core.migrations import UninitializedDatabaseError  # noqa: E402
 
 
-class DashboardRenderTest(unittest.TestCase):
+class DashboardModelTest(unittest.TestCase):
     def test_payslip_chart_groups_by_payroll_period_not_payment_month(self):
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
@@ -48,30 +42,6 @@ class DashboardRenderTest(unittest.TestCase):
         self.assertEqual(chart["months"], ["2026-05", "2026-06"])
         self.assertEqual(chart["gross"], [1000.0, 2000.0])
         self.assertEqual(chart["net"], [700.0, 1500.0])
-
-    def test_payslip_detail_fields_reach_the_table(self):
-        con = sqlite3.connect(":memory:")
-        self.addCleanup(con.close)
-        con.executescript(SCHEMA)
-        con.execute(
-            """INSERT INTO payslips(
-                   period_start,period_end,paid_on,employer,gross_minor,net_minor,
-                   income_tax_minor,social_security_minor,health_insurance_minor,
-                   pension_employee_minor,pension_employer_minor,
-                   study_fund_employee_minor,study_fund_employer_minor,currency
-               ) VALUES(
-                   '2026-01-01','2026-01-31','2026-02-01','Employer',
-                   200000,140000,20000,5000,3000,12000,13000,5000,6000,'ILS'
-               )"""
-        )
-
-        model = DashboardModelBuilder(con).build("2026-02-01")
-        table = render_payslips_table(model)
-
-        self.assertIn("Bituah", table)
-        self.assertIn("Health", table)
-        self.assertIn("Pension", table)
-        self.assertIn("Study fund", table)
 
     def test_net_worth_history_omits_isolated_pre_ledger_snapshot_run(self):
         con = sqlite3.connect(":memory:")
@@ -672,59 +642,6 @@ class DashboardRenderTest(unittest.TestCase):
 
         self.assertEqual(shown["observed_through"], "2026-01-01")
 
-    def test_renderer_is_read_only_private_and_script_safe(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "finance.db"
-            output = Path(directory) / "dashboard.html"
-            con = sqlite3.connect(db)
-            con.executescript(SCHEMA)
-            con.executemany(
-                "INSERT INTO accounts(name,kind,institution,currency) VALUES(?,?,?,?)",
-                [
-                    ("Checking", "checking", "Bank", "ILS"),
-                    ("Card", "credit_card", "Card", "ILS"),
-                ],
-            )
-            con.executemany(
-                "INSERT INTO balances(account_id,as_of,amount_minor,currency) VALUES(?,?,?,?)",
-                [
-                    (1, "2026-01-01", 100_00, "ILS"),
-                    (2, "2026-01-01", -20_00, "ILS"),
-                ],
-            )
-            con.execute(
-                """INSERT INTO transactions(
-                       account_id,date,amount_minor,currency,category,flow_type,
-                       counterparty,description
-                   ) VALUES(1,'2026-01-02',-1000,'ILS','groceries','expense',?,?)""",
-                (
-                    "</script><script>alert(1)</script>{{CHARTS_JS_APP}}",
-                    "unsafe-looking source text",
-                ),
-            )
-            con.commit()
-            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            con.close()
-            before = hashlib.sha256(db.read_bytes()).digest()
-
-            render_dashboard(db, output, "2026-01-02")
-            self.assertEqual(before, hashlib.sha256(db.read_bytes()).digest())
-            self.assertEqual(os.stat(output).st_mode & 0o777, 0o600)
-            rendered = output.read_text(encoding="utf-8")
-            self.assertNotIn("</script><script>alert(1)</script>", rendered)
-            self.assertIn("\\u003c/script\\u003e", rendered)
-            self.assertIn("{{CHARTS_JS_APP}}", rendered)
-            self.assertIn("70.00 ILS", rendered)
-            self.assertNotIn("unsafe-looking source text", rendered)
-            self.assertIn("over the last 30 days", rendered)
-            self.assertIn('class="merchant-cell"', rendered)
-            self.assertNotIn("overflow-x: auto", rendered)
-            self.assertNotIn("min-width: max-content", rendered)
-            self.assertIn("Total income", rendered)
-            self.assertIn('<th class="num">Jan</th>', rendered)
-            self.assertNotIn('<th class="num">1M</th>', rendered)
-            self.assertNotIn(">Refunds</th>", rendered)
-
     def test_fx_chart_prefers_document_rate_across_quote_orientation(self):
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
@@ -831,6 +748,17 @@ class DashboardRenderTest(unittest.TestCase):
         self.assertEqual(
             [row["cumulative_usd_amount"] for row in forex["rows"]],
             [250.0, 250.0, 300.0, 100.0, 0.0],
+        )
+        self.assertEqual(
+            [
+                row["cumulative_external_reporting_amount"]
+                for row in forex["rows"]
+            ],
+            [885.0, 885.0, 1070.0, 350.0, 0.0],
+        )
+        self.assertEqual(
+            [row["cumulative_usd_purchased_amount"] for row in forex["rows"]],
+            [50.0, 0.0, 0.0, 0.0, 0.0],
         )
         self.assertEqual(
             forex["summary"],
@@ -945,54 +873,6 @@ class DashboardRenderTest(unittest.TestCase):
 
         self.assertEqual(positions[0]["pnl_reporting"], 200.0)
         self.assertEqual(positions[0]["pnl_pct"], 20.0)
-
-    def test_empty_database_renders_without_usd_fx(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "finance.db"
-            output = Path(directory) / "dashboard.html"
-            con = sqlite3.connect(db)
-            con.executescript(SCHEMA)
-            con.close()
-
-            render_dashboard(db, output, "2026-01-02")
-            self.assertTrue(output.is_file())
-            self.assertIn("0.00 ILS", output.read_text(encoding="utf-8"))
-
-    def test_renderer_refuses_symlinked_database_parent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            outside = root / "outside"
-            outside.mkdir()
-            db = outside / "finance.db"
-            con = sqlite3.connect(db)
-            con.executescript(SCHEMA)
-            con.close()
-            repo = root / "repo"
-            repo.mkdir()
-            (repo / "data").symlink_to(outside, target_is_directory=True)
-
-            with self.assertRaisesRegex(UninitializedDatabaseError, "directory"):
-                render_dashboard(
-                    repo / "data" / "finance.db",
-                    repo / "dashboard.html",
-                    "2026-01-02",
-                )
-
-    def test_renderer_refuses_symlinked_output_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            db = root / "finance.db"
-            con = sqlite3.connect(db)
-            con.executescript(SCHEMA)
-            con.close()
-            outside = root / "outside"
-            outside.mkdir()
-            output_link = root / "output"
-            output_link.symlink_to(outside, target_is_directory=True)
-
-            with self.assertRaisesRegex(ValueError, "symlinks"):
-                render_dashboard(db, output_link / "dashboard.html", "2026-01-02")
-            self.assertFalse((outside / "dashboard.html").exists())
 
 
 if __name__ == "__main__":

@@ -20,8 +20,8 @@ test('parseIni reads keys under a [section]', () => {
 });
 
 test('parseIni ignores blank lines and # / ; comments', () => {
-  const ini = parseIni('# comment\n\n[telegram]\n; another\nbot_token=t\n');
-  assert.deepEqual(ini.telegram, { bot_token: 't' });
+  const ini = parseIni('# comment\n\n[ibkr]\n; another\nbase_currency=t\n');
+  assert.deepEqual(ini.ibkr, { base_currency: 't' });
 });
 
 test('parseIni splits on the first = only (values may contain =)', () => {

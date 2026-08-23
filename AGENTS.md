@@ -1,22 +1,22 @@
 # findash
 
-Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + configured feeds → SQLite → local React dashboard or optional Telegram snapshot. `sync-finance-data` is the complete update: it runs `fetch-bank-data`, attempts `fetch-investments`, gathers Drive drops, ingests and reconciles everything, refreshes cached market data, and performs the gated backup. `send-finance-dashboard` separately renders deterministic HTML from SQLite and sends it to Telegram. `./run_dashboard.sh` runs the localhost React dashboard; its server appends stock/FX observations every 30 minutes. `setup` handles onboarding and `findash-doctor` audits the install. External failures become `⚠️` warnings unless local migration/ingestion cannot continue.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + configured feeds → SQLite → local React dashboard. `sync-finance-data` is the complete update: it runs `fetch-bank-data`, attempts `fetch-investments`, gathers Drive drops, ingests and reconciles everything, refreshes cached market data, and performs the gated backup. `./run_dashboard.sh` runs the localhost React dashboard; its server appends stock/FX observations every 30 minutes. `setup` handles onboarding and `findash-doctor` audits the install. External failures become `⚠️` warnings unless local migration/ingestion cannot continue.
 
-Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running from the repo root with `--plugin-dir .` (the cron wrapper passes the same flag).
+Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running from the repo root with `--plugin-dir .`.
 
 ## First principles
 
 These shape every decision in this project. Re-read them when you're about to write code.
 
-1. **Public-project hygiene.** This repository is public. Keep committed code, docs, examples, and prompts generalized so they work for any user. Never include a real user's account numbers, balances, transaction amounts, counterparties, credentials, tokens, Drive IDs, personal identifiers, or local secret values. Provider names are fine when documenting supported integrations; user-specific financial details are not. Never print, paste, upload, or otherwise share secrets from `.secrets/`, `rclone.conf`, local databases, downloaded statements, or generated dashboards.
+1. **Public-project hygiene.** This repository is public. Keep committed code, docs, examples, and prompts generalized so they work for any user. Never include a real user's account numbers, balances, transaction amounts, counterparties, credentials, tokens, Drive IDs, personal identifiers, or local secret values. Provider names are fine when documenting supported integrations; user-specific financial details are not. Never print, paste, upload, or otherwise share secrets from `.secrets/`, local databases, downloaded statements, or generated dashboards.
 
 2. **Judgment over scripts.** Codex's reasoning is the asset, not a parser script. Don't write categorization rules, don't pattern-match filenames mechanically, don't hard-code "if counterparty contains X then category is Y". The example: a large outflow to a brokerage you own is *not* an expense — it's a transfer. Only Codex can see that, because Codex reads both the bank statement and the brokerage's deposit confirmation in the same session. Scripts can't.
 
-   Mechanical work (parsing XLSX bytes, executing SQL, decrypting a PDF with a known password, calling `rclone`) is fine as a script. *Interpretation* of what the data means is always done by Codex.
+   Mechanical work (parsing XLSX bytes, executing SQL, decrypting a PDF with a known password, decoding a connector download into staging) is fine as a script. *Interpretation* of what the data means is always done by Codex.
 
 3. **One topic per file.** A skill describes a flow; it never repeats schema details. The schema doc never repeats the Drive layout. If you're about to write the same fact in two places, stop and decide which file owns it.
 
-4. **Instruct, don't hardcode.** Tell Codex what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the HTML template, the CSS.
+4. **Instruct, don't hardcode.** Tell Codex what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the React dashboard.
 
 5. **Money as integers.** All amounts are `amount_minor INTEGER` in the ISO currency's minor unit. Convert with the shared currency helpers; exponents vary, so never assume ×100 or store money as `REAL`.
 
@@ -32,9 +32,8 @@ These shape every decision in this project. Re-read them when you're about to wr
 ~/findash/
 ├── AGENTS.md                 ← you are here
 ├── .gitignore
-├── rclone.conf               ← optional Drive OAuth token, chmod 600, gitignored
 ├── .secrets/
-│   └── findash               ← one chmod-600 INI: [drive] [hapoalim] [cal] [telegram] [pdf-passwords] [ibkr]
+│   └── findash               ← one chmod-600 INI: [drive] [hapoalim] [cal] [pdf-passwords] [ibkr]
 ├── .claude-plugin/
 │   ├── plugin.json           ← plugin manifest (name: findash → /findash:<skill>)
 │   └── marketplace.json      ← package metadata; standalone install deferred
@@ -42,7 +41,6 @@ These shape every decision in this project. Re-read them when you're about to wr
 │   ├── fetch-bank-data/SKILL.md
 │   ├── fetch-investments/SKILL.md  ← live IBKR trades → SQLite (official connector; interactive)
 │   ├── sync-finance-data/SKILL.md  ← complete fetch + ingest + reference refresh
-│   ├── send-finance-dashboard/SKILL.md ← deterministic HTML + Telegram
 │   ├── findash-doctor/SKILL.md
 │   └── setup/SKILL.md              ← guided first-time onboarding
 ├── dashboard/                 ← React/Vite live dashboard (localhost only)
@@ -54,31 +52,21 @@ These shape every decision in this project. Re-read them when you're about to wr
 │   ├── live-sources.md       ← live-API sources (IBKR) that write SQLite directly
 │   ├── design-system.md      ← the booky aesthetic
 │   └── inspiration/          ← reference images
-├── templates/
-│   ├── dashboard.html.tpl    ← HTML shell with {{PLACEHOLDER}}s
-│   ├── styles.css            ← inlined into dashboard.html at render time
-│   ├── charts.js             ← inlined into dashboard.html at render time
-│   └── vendor/               ← gitignored; produced by scripts/bundle-assets.py
-│       ├── chart.umd.min.js
-│       ├── chartjs-adapter-date-fns.bundle.min.js
-│       └── fonts-inline.css  ← EB Garamond + Cormorant Garamond as base64 woff2
 ├── data/
-│   └── finance.db            ← local SQLite (source of truth), backed up to Drive weekly
+│   ├── finance.db            ← local SQLite (source of truth)
+│   └── backups/              ← weekly consistent snapshots, newest eight kept
 ├── inbox/
 │   └── staging/              ← the fetch→sync handoff; sync deletes files after ingest
 │       ├── fetched/          ← bank pairs staged by fetch-bank-data
 │       ├── drive/            ← Drive pulls, filenames prefixed <driveId>__
 │       └── captures/         ← ephemeral private raw bank responses; never synced
-├── output/
-│   └── dashboard.html        ← single self-contained file (CSS + JS + fonts inlined)
 └── scripts/
     ├── init-db.sql           ← schema definition
-    ├── drive.sh              ← fixed, private Drive wrapper (including layout setup)
+    ├── drive_root.py         ← prints the vault root folder id for the Drive connector, nothing else
+    ├── staging_files.py      ← staging lifecycle: delete after ingest, save-download for connector pulls
+    ├── backup_database.py    ← weekly consistent SQLite snapshot into data/backups/
     ├── xlsx_to_rows.py       ← stdlib-only XLSX → JSON parser
-    ├── bundle-assets.py      ← one-shot vendor script for templates/vendor/
     ├── fetch_bank.js         ← Puppeteer wrapper around israeli-bank-scrapers (Hapoalim + Cal)
-    ├── run_sync.sh           ← unattended wrapper: runs /findash:sync-finance-data
-    ├── install_launch_agent.py ← safely renders the macOS scheduler plist
     ├── lib/                  ← shared secret-file parsers (secrets.mjs, findash_secrets.py)
     ├── package.json          ← npm deps for fetch_bank.js (`scripts/install_node_deps.sh`)
     └── node_modules/         ← gitignored
@@ -87,17 +75,10 @@ These shape every decision in this project. Re-read them when you're about to wr
 ## One-time setup notes
 
 - `qpdf` is required to unlock payslip PDFs. Install: `sudo apt install -y qpdf`.
-- `rclone` and Drive are optional. A fresh public clone has no `rclone.conf`; users who opt in create a private checkout-local `./rclone.conf` (chmod 600) through `docs/setup.md`. Skills use `scripts/drive.sh`; never assume the config exists or invoke raw rclone against another config.
-- **All findash secrets live in one chmod-600 file, `.secrets/findash`** — an INI with `[drive] [hapoalim] [cal] [telegram] [pdf-passwords]` sections. `rclone.conf` stays separate (rclone's own OAuth config). The Drive vault root folder ID is `root_folder_id=<ID>` under `[drive]`; get the ID from your vault folder's Drive URL (`drive.google.com/drive/folders/<ID>`). Skills read it and pass it to rclone via `--drive-root-folder-id=<ID>`. Folder *structure* is documented in `docs/drive-layout.md`.
+- **Google Drive (optional):** Anthropic's official **Google Drive connector**, added through Claude's connector directory — not a findash MCP server, and its tool names are connector-specific (discover them by function at run time). Skills scope every call to the vault root id from `python3 scripts/drive_root.py` and never list, search, share, or trash anything else in the Drive. Connector downloads are decoded into staging with `python3 scripts/staging_files.py save-download`. Without the connector, manual-drop ingest is skipped with a `⚠️` warning.
+- **All findash secrets live in one chmod-600 file, `.secrets/findash`** — an INI with `[drive] [hapoalim] [cal] [pdf-passwords] [ibkr]` sections. The Drive vault root folder ID is `root_folder_id=<ID>` under `[drive]`; get the ID from your vault folder's Drive URL (`drive.google.com/drive/folders/<ID>`). Skills read it only through `scripts/drive_root.py`. Folder *structure* is documented in `docs/drive-layout.md`.
+- **Daily sync:** a Claude scheduled task (routine) in the desktop app runs `/findash:sync-finance-data` inside the signed-in session, so the Drive and IBKR connectors are available to it. There is no headless `claude -p` wrapper: claude.ai connectors do not surface there. The task writes the database only.
 - Payslip passwords go under `[pdf-passwords]` in `.secrets/findash`, one `<filename-pattern>=<password>` per line.
-- **Offline assets for the dashboard:** run `python3 scripts/bundle-assets.py` once to vendor Chart.js, the date adapter, and base64-embedded EB Garamond + Cormorant Garamond fonts into `templates/vendor/` (gitignored). Re-run only if pinned versions change.
-- **Telegram delivery for the dashboard:** the `[telegram]` section of `.secrets/findash` holds the bot credentials:
-  ```
-  [telegram]
-  bot_token=<from @BotFather>
-  chat_id=<your numeric Telegram user id, from @userinfobot>
-  ```
-  Create the bot once via `@BotFather` → `/newbot`, then tap **Start** on the bot so it's allowed to DM you. `send-finance-dashboard` renders from the stored cache and sends the dashboard as a single HTML attachment.
 - **Hapoalim + Cal auto-fetch (`fetch-bank-data` skill):**
   1. Node ≥ 22.13.0 required (`israeli-bank-scrapers` engine constraint). Check with `node --version`; if older, `nvm install 22 && nvm use 22`.
   2. `scripts/install_node_deps.sh` — runs the lockfile-based `npm ci` install for `israeli-bank-scrapers`, Puppeteer, and its bundled Chromium. One `package.json` covers both companies.
@@ -127,7 +108,7 @@ These shape every decision in this project. Re-read them when you're about to wr
 
 ## Files to never commit
 
-**Never commit `rclone.conf`, `data/finance.db`, `.secrets/`, `inbox/`, or `output/`** — `.gitignore` covers them, but double-check before any `git add -A`.
+**Never commit `data/`, `.secrets/`, or `inbox/`** — `.gitignore` covers them, but double-check before any `git add -A`.
 
 ## Trigger phrases
 
@@ -137,8 +118,7 @@ Skills are invoked as `/findash:<skill>`; the phrases below also trigger them by
 - **"fetch bank data"** / **"pull from bank"** / **"fetch hapoalim"** / **"fetch cal"** / **"fetch credit card"** / **"pull from cal"** → `fetch-bank-data` skill
 - **"fetch investments"** / **"fetch ibkr"** / **"fetch interactive brokers"** / **"pull portfolio"** / **"snapshot ibkr"** → `fetch-investments` skill
 - **"sync finance"** / **"sync my finance"** / **"ingest new docs"** → `sync-finance-data` skill
-- **"send dashboard"** / **"send to Telegram"** / **"message my finances"** → `send-finance-dashboard` skill
 - **"doctor"** / **"finance doctor"** / **"check finance setup"** / **"what's missing"** → `findash-doctor` skill
 - **"set up findash"** / **"onboard"** / **"first-time setup"** / **"configure findash"** → `setup` skill
 
-The regular data flow is `bank/card → IBKR → Drive/staging → ingest → market cache → backup`, all owned by `sync-finance-data` (or `scripts/run_sync.sh` unattended). Output is independent: run `./run_dashboard.sh` for the live localhost view, or invoke `send-finance-dashboard` when a Telegram snapshot is wanted.
+The regular data flow is `bank/card → IBKR → Drive/staging → ingest → market cache → backup`, all owned by `sync-finance-data` (interactively or as a scheduled task). Output is independent: run `./run_dashboard.sh` for the live localhost view.

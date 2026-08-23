@@ -6,19 +6,34 @@ plugin manifest (`.claude-plugin/plugin.json`).
 
 ## [Unreleased]
 
+### Removed
+- **The Telegram snapshot path is gone.** `send-finance-dashboard`, `scripts/send_telegram.sh`,
+  `scripts/render_dashboard.py`, `scripts/bundle-assets.py`, the `templates/` HTML/CSS/JS
+  shell, `findash_core.dashboard_html`/`assets`/`script_json`, the `[telegram]` secrets
+  section, and the accumulating `data/last_sync_summary.md` file. The static HTML
+  renderer had fallen behind the normalized ledger; the live React dashboard is the only
+  output. Sync reports its count-only summary on stdout and nowhere else.
+
 ### Changed
+- **Google Drive moved to the official Drive connector.** Skills prepare, list, pull
+  from, and file into the vault through Anthropic's Google Drive connector (added in
+  Claude, scoped to `[drive] root_folder_id`). `scripts/drive_root.py` is the only way
+  skills learn the vault id, and `scripts/staging_files.py save-download` decodes a
+  connector download into `inbox/staging/drive/` without the bytes crossing a shell
+  command. No OAuth token lives in the checkout anymore.
+- **Database backups are local.** `scripts/backup_database.py` archives the weekly
+  consistent snapshot under `data/backups/` (newest eight kept) instead of uploading
+  to Drive; the seven-day gate and integrity checks are unchanged.
+- **Daily syncs run as Claude scheduled tasks** in the desktop app, inside the
+  signed-in session where the Drive and IBKR connectors are available.
 - **Sync and output are independent.** `sync-finance-data` now owns bank/card
   fetch, best-effort IBKR, Drive gathering, ingestion/reconciliation, market-cache
-  refresh, Drive filing, and backup. It never renders or sends a dashboard;
-  `scripts/run_sync.sh` is the unattended entry point.
-- **Telegram delivery is explicit.** `send-finance-dashboard` deterministically
-  renders the cached SQLite state to self-contained HTML and sends it only when
-  requested. The former `daily-run` and `render-finance-dashboard` skills were removed.
+  refresh, Drive filing, and backup. The live React dashboard is opened separately.
+- The former `daily-run` and `render-finance-dashboard` skills were removed.
 - **Market refreshes keep both daily caches and append-only observations.** Daily
   `prices`/`fx_rates` remain the accounting baseline, while current observations
   preserve what each 30-minute local-dashboard refresh saw.
-- **The React dashboard now shares the Telegram renderer's Chart.js visual
-  language.** Net-worth, benchmark, funding, and expense views are responsive,
+- **The React dashboard uses the design system's Chart.js visual language.** Net-worth, benchmark, funding, and expense views are responsive,
   animated, hoverable, and include 3M/YTD/1Y/All range controls where relevant.
 - **Standalone marketplace installation is deferred.** FinDash currently relies on
   private state and mechanical scripts beside the checkout; clone it and launch with
@@ -32,7 +47,7 @@ plugin manifest (`.claude-plugin/plugin.json`).
   `inbox/staging/drive/<driveId>__<name>`, prepares missing fixed vault folders,
   and sorts direct `dump/` files after ingest. Moves never overwrite a destination,
   so collisions preserve both Drive identities. Drive failures degrade to a `⚠️`
-  summary warning instead of failing the run; Telegram relays it only when configured.
+  summary warning instead of failing the run.
 - **XLSX ingestion is streaming and bounded.** Archive expansion, XML parts/depth,
   sheets, styles, rows, cells, text fragments, and emitted text all have explicit
   limits so a malformed import cannot build an unbounded XML tree or sparse result.
@@ -43,8 +58,7 @@ plugin manifest (`.claude-plugin/plugin.json`).
   pushes the DB to Drive.
 - **Unattended runtime hardening.** Daily syncs are single-instance, each Claude attempt
   has a portable timeout, completion uses an explicit status marker, local financial
-  files use user-only modes, Chromium keeps its sandbox by default, and Telegram refuses
-  to resend a stale dashboard unless explicitly requested.
+  files use user-only modes, and Chromium keeps its sandbox by default.
 - **Bank scraper output stays private.** Raw provider responses are atomically captured
   in a mode-600 local staging file for the fetch skill to split; stdout and unattended
   logs contain source/count status only, and the capture is deleted after staging.
@@ -87,6 +101,15 @@ plugin manifest (`.claude-plugin/plugin.json`).
   financial rows, and modeled dividend entitlement remains separate from recorded cash.
 - **Telegram summary restyle** — emoji-prefixed bullets, ≤10 words each, with a
   `## ⚠️ Warnings` section leading the summary on degraded runs.
+
+### Removed
+- **rclone and its wrapper.** `scripts/drive.sh`, `scripts/adopt_rclone_config.py`,
+  `rclone.conf` handling in the doctor/setup skills, and the Drive `finance.db` /
+  `backups/` uploads are gone; the vault's old copies are no longer maintained.
+- **The headless daily-sync wrapper.** `scripts/run_daily.sh`, `scripts/run_sync.sh`,
+  `scripts/run_with_timeout.py`, `scripts/install_launch_agent.py`, and the
+  `com.findash.daily` LaunchAgent template were removed — a `claude -p` job cannot
+  reach claude.ai connectors, so scheduling lives in the desktop app instead.
 
 ### Added
 - A private localhost React dashboard and API, launched with

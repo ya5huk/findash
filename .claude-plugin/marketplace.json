@@ -3,12 +3,12 @@
   "owner": {
     "name": "ya5huk"
   },
-  "description": "findash — sync personal-finance evidence into SQLite, view a live local React dashboard, and optionally send a deterministic Telegram snapshot.",
+  "description": "findash — sync personal-finance evidence into SQLite and view a live local React dashboard.",
   "plugins": [
     {
       "name": "findash",
       "source": "./",
-      "description": "Personal finance: sync bank, document, and IBKR evidence into SQLite, view a live local React dashboard, and optionally send a deterministic Telegram snapshot. Local checkout currently required."
+      "description": "Personal finance: sync bank, document, and IBKR evidence into SQLite, and view a live local React dashboard. Local checkout currently required."
     }
   ]
 }

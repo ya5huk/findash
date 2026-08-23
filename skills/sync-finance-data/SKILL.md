@@ -1,13 +1,13 @@
 ---
 name: sync-finance-data
-description: Use when the user says "sync finance", "daily sync", "run the morning sync", "fetch my finances", "ingest new docs", "run everything", or any full financial-data update. Runs all configured sources — bank/card fetch, IBKR, Drive/manual staging — then ingests and reconciles SQLite, refreshes deterministic market caches, sorts Drive drops, and performs the gated backup. It never renders or sends a dashboard.
+description: Use when the user says "sync finance", "daily sync", "run the morning sync", "fetch my finances", "ingest new docs", "run everything", or any full financial-data update. Runs all configured sources — bank/card fetch, IBKR, Drive/manual staging — then ingests and reconciles SQLite, refreshes deterministic market caches, sorts Drive drops, and performs the gated backup. It writes SQLite only; the live dashboard is run separately.
 ---
 
 # sync-finance-data
 
-Run the complete data update into local SQLite: collect every configured source, ingest and reconcile it, refresh cached reference data, and back it up when due. **Do not render HTML or contact Telegram.** Those are separate user-requested actions.
+Run the complete data update into local SQLite: collect every configured source, ingest and reconcile it, refresh cached reference data, and back it up when due. It writes the database only; `./run_dashboard.sh` is the separate, user-run way to look at the result.
 
-Use judgment, not pattern-matching. Categorization, deduplication, and reconciliation across sources are your job. Run every foreground command to completion before moving on; unattended callers cannot receive deferred-task notifications.
+Use judgment, not pattern-matching. Categorization, deduplication, and reconciliation across sources are your job. Run every foreground command to completion before moving on; a scheduled task cannot receive deferred-task notifications.
 
 **External collection is best-effort; local ingest is the reliable core.** A bank, IBKR, market, or Drive failure becomes a count-only `⚠️` summary bullet and the run continues. Fail only when migration or local ingestion cannot complete safely.
 
@@ -18,7 +18,7 @@ Use judgment, not pattern-matching. Categorization, deduplication, and reconcili
 - Safe query/write gateway: [`docs/database-operations.md`](../../docs/database-operations.md)
 - How each archetype maps to tables: [`docs/doc-types/`](../../docs/doc-types/README.md)
 - Password for protected payslip PDFs: the `[pdf-passwords]` section of `.secrets/findash` (one `pattern=password` line per file pattern)
-- Drive access: `scripts/drive.sh` (`ensure-layout` / `ls [-R]` / `pull` / `move` / `delete`) — it owns `./rclone.conf` and the root-ID from `.secrets/findash`, fast-fails on network trouble, and any non-zero exit means "Drive degraded" (warn + continue). Database uploads are owned by `scripts/backup_database.py` so the live WAL database is never copied directly.
+- Drive access: the official **Google Drive connector** — a claude.ai connector the user adds in Claude, not a findash MCP server. Its tool names are connector-specific, so discover them by function with ToolSearch (search files · get file metadata · download file content · create file · update file). Every call is scoped to the vault root id, which `python3 scripts/drive_root.py` prints (and nothing else); connector downloads land in staging through `python3 scripts/staging_files.py save-download`. Any failure means "Drive degraded" (warn + continue). The weekly database backup is local (`scripts/backup_database.py`) and never leaves the machine.
 - Local DB: `data/finance.db`
 - Staging — the ingest queue: `inbox/staging/fetched/` (pairs staged by `fetch-bank-data`) and `inbox/staging/drive/` (Drive pulls from step 3, filenames prefixed `<driveId>__` so identity survives a crashed session)
 
@@ -34,14 +34,20 @@ Run `python3 scripts/migrate_db.py`, then run the [`fetch-investments`](../fetch
 
 ### 3. Gather new Drive drops into staging (best-effort)
 
-Pull anything new from Drive into local staging. Every Drive call here is best-effort: on failure, add a `⚠️` bullet (step 10) and continue — never abort.
+Pull anything new from the vault into local staging through the Google Drive connector. Every call here is best-effort: on failure, add a `⚠️` bullet (step 10) and continue — never abort.
 
-- Prepare the fixed public folder layout: `scripts/drive.sh ensure-layout`. This is idempotent and creates any category folder missing from a new or older vault without listing private filenames.
-- List the inbox: `scripts/drive.sh ls dump/`
-- List the vault: for each top folder in `<DRIVE_ROOT>` (`payslips`, `investments`, `long-term-savings`, `full-statements`, `fx-conversions`, and `other`), `scripts/drive.sh ls -R <folder>/`. Collect `(ID, Path, ModTime, Size)`.
-- **If layout preparation or listing fails** (permissions, auth lapse, or network trouble): one warning bullet — `⚠️ Drive unavailable or vault layout incomplete — manual drops skipped` — then go straight to step 4 and ingest whatever is already staged. A missing fixed folder by itself is not an outage: `ensure-layout` creates it before listing.
+- **Find the connector tools** with ToolSearch, matching by function. If they are absent — the connector was never added, or this session cannot reach claude.ai connectors — add `⚠️ Drive connector unavailable — manual drops skipped` and go straight to step 4.
+- **Resolve the vault root:** `python3 scripts/drive_root.py` prints the configured `root_folder_id`. Probe it with the metadata tool; a failure here is the same warning as above, plus the fix if the cause is visible (connector not connected → add it via Claude → Connectors; root folder not found → fix `[drive] root_folder_id`).
+- **Stay inside the vault.** Only ever search with `parentId = '<folder id>'` and `excludeContentSnippets: true`. Never call recent-files, whole-Drive `title`/`fullText` searches, sharing, or trash tools: the connector sees the user's entire Drive, and the vault is the only part that is findash's business.
+- **Prepare the fixed layout:** list the root once and create any category folder from [`docs/drive-layout.md`](../../docs/drive-layout.md) that is missing (create-file with the folder MIME type, `title` = folder name, `parentId` = root). Idempotent; never rename or move an existing folder.
+- **List the inbox and the vault:** search `dump/` by its folder id, then each category folder (`payslips`, `investments`, `long-term-savings`, `full-statements`, `fx-conversions`, `other`) recursively — follow folder entries by id and pass `pageToken` until a response is empty. Collect `(id, path, modifiedTime, fileSize)`.
+- **If layout preparation or listing fails** (permissions, a signed-out connector, or network trouble): one warning bullet — `⚠️ Drive unavailable or vault layout incomplete — manual drops skipped` — then go straight to step 4 and ingest whatever is already staged. A missing fixed folder by itself is not an outage: layout preparation creates it before listing.
 - **Dedup before download:** query `documents.drive_id`; skip anything already present. Exception: a `dump/`-listed file whose `drive_id` is already in `documents` was ingested on a previous run but its Drive-side move failed — put it on the **deferred-move list** for step 7 (its destination is stored in `documents.drive_path`); don't re-download. Ordinary sync never reclassifies an already-known ID or discovers a later manual path change. No maintenance command currently does that, so never promise it will happen on a future sync.
-- Download each genuinely new file: `scripts/drive.sh pull <path> inbox/staging/drive/<ID>__<filename>` — the `<ID>__` prefix keeps the drive_id attached to the file even if this session dies before ingest. Sanity-check the downloaded size against the listing. A per-file failure → warning bullet, skip that file, keep going.
+- **Download each genuinely new file** with the download tool. The result is base64: a small file arrives inline as `{content, id, mimeType, title}`; a large one is persisted by Claude Code to a private tool-results file whose path appears in the result. Either way the bytes never go through a shell command:
+  - persisted result → `python3 scripts/staging_files.py save-download <tool-result-path> <ID> <filename> --expected-size <fileSize>`
+  - inline result → write the `content` string to `inbox/staging/drive/<ID>__<filename>.b64` with the Write tool, then `python3 scripts/staging_files.py save-download inbox/staging/drive/<ID>__<filename>.b64 <ID> <filename> --expected-size <fileSize>` (the scratch file is removed on success).
+
+  The helper decodes into `inbox/staging/drive/<ID>__<filename>` at mode 600 — the `<ID>__` prefix keeps the drive_id attached to the file even if this session dies before ingest — refuses a result for another file id, and fails on a size mismatch so a truncated download is never ingested. Never substitute the connector's text-rendering tool for the local file: its extraction drops layout and reverses RTL text, and step 4 reads the real bytes. A per-file failure → warning bullet, skip that file, keep going.
 
 ### 4. Ingest everything in staging (local, reliable)
 
@@ -132,6 +138,20 @@ legacy bank row, amount/date similarity alone, or multiple plausible destination
 Leave those residuals unrecorded and add one count-only review warning. Never create
 a balancing entry merely to make snapshots reconcile.
 
+There is one separate proof path when brokerage snapshots are partial: a complete
+typed FX-conversion document can corroborate reviewed owned-account funding. Use
+the fixed `reconcile-funding-fx` operation only when the unnormalized bank outflow's
+private recipient/reference evidence identifies this brokerage, the FX document
+shows a positive destination-currency leg and authoritative rate, and that rate
+maps the destination amount to the entire source-currency bank outflow within the
+fixed two-minor-unit display-rounding tolerance, zero to three days later. The
+operation creates the equal brokerage funding inflow plus the missing negative
+source-currency FX leg, normalizes the positive destination leg, and records
+`funding_fx_links`. The funding inflow counts as external capital; both FX legs are
+internal investment cash movements. Delete
+the private request afterward. Never use this path for a cropped/ambiguous
+conversion, a partial amount, or an amount/date-only guess.
+
 ### 5. Refresh price + FX cache
 
 Run `python3 scripts/refresh_prices.py --range 1mo`. This calls Yahoo for the last month of daily closes for every currently-held security, the benchmark, and currencies present in the ledger. It also appends the latest stock and FX observations for the live localhost dashboard and refreshes cached per-share distribution events for securities with holding history. These are reference data only and never become transactions. Daily price rows update deterministically by security/date, document-sourced FX rates remain authoritative, and append-only observations preserve what each refresh saw. Any newly observed security with insufficient history is automatically promoted to a longer backfill.
@@ -160,34 +180,29 @@ Position/cash snapshots already contain everything observed before their anchor 
 
 ### 7. Sort `dump/` drops on Drive (best-effort)
 
-For every dump-sourced file ingested in step 4, plus every entry on the deferred-move list from step 3:
-
-```bash
-scripts/drive.sh move dump/<orig> <documents.drive_path>
-```
+For every dump-sourced file ingested in step 4, plus every entry on the deferred-move list from step 3, move the file with the connector's update tool: `fileId` = the document's `drive_id`, `parentId` = the destination folder id, `title` = the new name — both taken from `documents.drive_path` (`<category>/<period>/<name>`). Resolve the destination folder by searching the category folder for the `<period>` subfolder by title under its `parentId`, creating it when missing. Before moving, search the destination folder for an existing file with the same title: a collision leaves both Drive identities untouched for manual review — never overwrite, rename around, or trash.
 
 Drive preserves the file's `drive_id` across the move, so the documents row
-stays valid. The wrapper moves only one file directly under `dump/` and refuses
-to overwrite any existing destination; a collision leaves both Drive identities
-untouched for manual review. Failed moves produce one count-only warning (for example,
+stays valid. Only move one file directly under `dump/` at a time, and only to a
+managed category path. Failed moves produce one count-only warning (for example,
 `⚠️ dump sort deferred — 1 document remains`); lingering files are harmless
 (drive_id dedup stops re-ingestion) and the moves retry automatically next run.
 
-### 8. Weekly database backup (best-effort, gated)
+### 8. Weekly database backup (local, gated)
 
-The DB goes to Drive at most once a week; day-to-day, local `data/finance.db` is the source of truth. Run:
+A consistent snapshot is archived at most once a week; day-to-day, `data/finance.db` is the source of truth. Run:
 
 ```bash
 python3 scripts/backup_database.py
 ```
 
-The command owns the seven-day gate, creates a private temporary database with
-SQLite's online backup API, integrity-checks it, and uploads that closed snapshot
-to both `finance.db` and `backups/finance-<timestamp>.db`. **Never copy the live
-`data/finance.db` directly**: it runs in WAL mode, so a file copy can omit committed
-pages still held in `finance.db-wal`. The temporary snapshot is deleted after the
-attempt. The command stamps `meta.last_db_backup_at` only after both uploads succeed
-and then best-effort prunes timestamped backups to the newest eight.
+The command owns the seven-day gate, creates a snapshot with SQLite's online
+backup API, integrity-checks it, stores it as `data/backups/finance-<timestamp>.db`
+(mode 600), stamps `meta.last_db_backup_at`, and prunes the archive to the newest
+eight. **Never copy the live `data/finance.db` directly**: it runs in WAL mode, so a
+file copy can omit committed pages still held in `finance.db-wal`. Nothing is
+uploaded anywhere — `data/` should sit inside whatever machine backup the user
+already trusts.
 
 - `Backup: done …` → success.
 - `Backup: skipped (fresh)` → success; omit from the summary.
@@ -206,47 +221,7 @@ Then stamp the run journal in `meta` through one `findash_db.py apply` request (
 
 ### 10. Summarize
 
-Two outputs: a per-file summary file retained for optional Telegram delivery, and a stdout report for the current conversation.
-
-**Per-file summary file** — append bullets to `data/last_sync_summary.md`. The separate [`send-finance-dashboard`](../send-finance-dashboard/SKILL.md) skill sends it after a newly rendered HTML dashboard and deletes it only after successful delivery.
-
-- Three top-level sections, **in this order**: `## ⚠️ Warnings` (best-effort failures from any step), `## Ingested` (files that produced ≥1 row in any fact table), `## Triaged` (files filed into their archetype folder without producing fact rows).
-- If the file already exists (the user ran sync twice before rendering), append under the existing section headers — don't duplicate headers, and don't repeat a warning bullet that's already there. Warnings always go at the top: prepend the section if it's missing.
-- Omit a section header entirely when it has no bullets this run.
-- If no section has any bullets (a clean no-op resync), don't touch the file at all. Warnings alone DO justify writing the file.
-- A file that was both filed AND produced data rows goes under **Ingested** only — no double-counting.
-
-**Bullet style — scannable, count-only, not prose.** One emoji prefix + max
-~10 words per bullet. Never include amounts, account/card fragments, filenames,
-employers, payees, security symbols, source identifiers, or raw provider errors,
-even though this file may go to the user's private Telegram. Full reconciliation
-reasoning belongs in `documents.notes` and the DB. Suggested emoji: 🏦 bank ·
-💳 card · 📈 investments · 💰 dividends · 📄 payslip · 🧾 statement ·
-📁 filed · 💾 backup · ⚠️ warning.
-
-```markdown
-## ⚠️ Warnings
-
-- ⚠️ Drive unavailable or vault layout incomplete — manual drops skipped
-- ⚠️ weekly DB backup failed — retrying next run
-
-## Ingested
-
-- 🏦 Bank data: <N> transactions, <B> balances updated
-- 💳 Card data: <N> transactions ingested
-- 📈 Investment data: <T> trades, <P> positions updated
-- 📄 Payslips: <N> documents ingested
-- 🧾 Statements: <N> documents, <B> balances updated
-
-## Triaged
-
-- 📁 <N> documents filed under investments
-- 📁 <N> documents filed under a new domain
-```
-
-**Stdout report** — print counts/status only. The same privacy rule applies:
-no amounts, filenames, account/card fragments, payees, security symbols, source
-identifiers, or verbatim errors.
+Print one stdout report for the current conversation — counts/status only, scannable, not prose. Never include amounts, filenames, account/card fragments, payees, employers, security symbols, source identifiers, or verbatim provider errors. Full reconciliation reasoning belongs in `documents.notes` and the DB, not here.
 
 ```
 Fetch: bank/card <ok|partial|skipped>; IBKR <ok|skipped>
@@ -258,13 +233,15 @@ Backup: done | skipped (fresh) | failed
 Warnings: <W>
 ```
 
-After the human-readable status, print exactly one final machine line:
+Below the status block, add one emoji-prefixed line (≤ ~10 words) per source that produced or filed something this run, and one `⚠️` line per best-effort failure. Suggested emoji: 🏦 bank · 💳 card · 📈 investments · 💰 dividends · 📄 payslip · 🧾 statement · 📁 filed · 💾 backup · ⚠️ warning. A file that was both filed and produced data rows is one line, not two. Omit `Backup: skipped (fresh)` lines from the per-source list; the status block already says it.
+
+After the human-readable report, print exactly one final machine line:
 
 ```text
 FINDASH_SYNC_STATUS=ok
 ```
 
-Print `FINDASH_SYNC_STATUS=failed` only when migration or local ingestion genuinely failed. Best-effort source warnings still produce `ok`; the unattended wrapper requires exactly one marker.
+Print `FINDASH_SYNC_STATUS=failed` only when migration or local ingestion genuinely failed. Best-effort source warnings still produce `ok`; a scheduled routine reads this one line to tell a degraded run from a failed one.
 
 ## Principles to apply throughout
 

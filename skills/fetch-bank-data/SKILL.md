@@ -5,7 +5,7 @@ description: Use when the user says "fetch bank data", "pull from bank", "fetch 
 
 # fetch-bank-data
 
-You pull fresh data from the user's customer-facing bank + credit-card sites and stage reasoned files in local `inbox/staging/fetched/`. **Sync owns ingestion** — your job ends when the pairs are staged; sync ingests them into SQLite and deletes them after commit. Fetched data never goes to Drive: SQLite is its only persistence. You do not touch SQLite (beyond read-only queries), do not call the dashboard, do not send Telegram. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `[section]` in `.secrets/findash` + one more mapping line below.
+You pull fresh data from the user's customer-facing bank + credit-card sites and stage reasoned files in local `inbox/staging/fetched/`. **Sync owns ingestion** — your job ends when the pairs are staged; sync ingests them into SQLite and deletes them after commit. Fetched data never goes to Drive: SQLite is its only persistence. You do not touch SQLite (beyond read-only queries), do not call the dashboard. Adding more issuers later (`max`, `isracard`, `amex`) is just one more `[section]` in `.secrets/findash` + one more mapping line below.
 
 ## Where things live
 
@@ -60,7 +60,7 @@ Subtract a few days (3–5) for overlap safety — sync dedups, so re-sending re
 
 ### 3. Run the scraper
 
-The scraper reads credentials from `.secrets/findash` **itself** — never put them on the command line. That keeps the unattended `claude -p` run allowlist-safe (the command stays a clean `node scripts/fetch_bank.js …` prefix) and your password out of the transcript. Pass the step-2 window as a flag. The wrapper atomically writes the raw response to the source's fixed mode-600 capture file; stdout is counts only — **never redirect or request raw JSON on stdout**:
+The scraper reads credentials from `.secrets/findash` **itself** — never put them on the command line. That keeps scheduled runs allowlist-safe (the command stays a clean `node scripts/fetch_bank.js …` prefix) and your password out of the transcript. Pass the step-2 window as a flag. The wrapper atomically writes the raw response to the source's fixed mode-600 capture file; stdout is counts only — **never redirect or request raw JSON on stdout**:
 
 ```bash
 node scripts/fetch_bank.js --company=hapoalim --start-date=YYYY-MM-DD
@@ -197,7 +197,7 @@ Cal: <N> transactions across <A> accounts; <F> observations; <P> pairs staged.
 If a source was skipped: `Hapoalim: skipped (no [hapoalim] credentials).`
 If a source failed: `Cal: failed (provider/authentication). Re-run: node scripts/fetch_bank.js --company=visaCal --setup`.
 
-**Do not** send to Telegram. Do not invoke sync. Do not touch the DB. End here.
+Do not invoke sync. Do not touch the DB. End here.
 
 ## When things break
 

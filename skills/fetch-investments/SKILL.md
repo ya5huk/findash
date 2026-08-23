@@ -1,6 +1,6 @@
 ---
 name: fetch-investments
-description: Use when the user says "fetch investments", "fetch ibkr", "fetch interactive brokers", "pull portfolio", "fetch brokerage", "snapshot ibkr", or any portfolio-snapshot equivalent — and as the best-effort IBKR source inside `sync-finance-data`. The connector authenticates only in interactive sessions, so unattended syncs typically skip it with a warning. Attaches IBKR as a source feed to the matching logical brokerage account, ingests raw trade evidence without double-counting wrapper statements, and writes position/cash reconciliation snapshots. Skips gracefully when the connector isn't connected.
+description: Use when the user says "fetch investments", "fetch ibkr", "fetch interactive brokers", "pull portfolio", "fetch brokerage", "snapshot ibkr", or any portfolio-snapshot equivalent — and as the best-effort IBKR source inside `sync-finance-data`. The connector is only reachable from a signed-in Claude session, so a session without it skips with a warning. Attaches IBKR as a source feed to the matching logical brokerage account, ingests raw trade evidence without double-counting wrapper statements, and writes position/cash reconciliation snapshots. Skips gracefully when the connector isn't connected.
 ---
 
 # fetch-investments
@@ -11,7 +11,7 @@ You pull a live portfolio from Interactive Brokers (IBKR) via the official conne
 
 **Logical accounts are not feeds.** Each provider account gets an `account_feeds(provider='ibkr')` row attached to the logical account it describes. A wrapper broker and IBKR are usually two feeds for one account; creating a second account would double-count the portfolio. Distinct IBKR accounts may map separately when they are genuinely separate economic accounts.
 
-**Interactive auth, best-effort everywhere.** The IBKR connector is Anthropic's certified Interactive Brokers connector, added by the user through Claude's connector directory (it's a claude.ai connector, *not* a findash-declared MCP server). It authenticates only in an **interactive** Claude session. `sync-finance-data` attempts this skill best-effort: an interactive sync pulls fresh IBKR data; unattended `run_sync.sh` typically finds the connector unavailable and skips with a `⚠️` warning bullet. You can also run it by hand any time.
+**Interactive auth, best-effort everywhere.** The IBKR connector is Anthropic's certified Interactive Brokers connector, added by the user through Claude's connector directory (it's a claude.ai connector, *not* a findash-declared MCP server). It is reachable only from a **signed-in** Claude session (interactive or a desktop-app scheduled task). `sync-finance-data` attempts this skill best-effort: a session with the connector pulls fresh IBKR data; a session without it skips with a `⚠️` warning bullet. You can also run it by hand any time.
 
 **Best-effort.** If the connector isn't connected (the user hasn't added it, or this is a headless session where it isn't available), **skip and report** — never abort. A user who doesn't use IBKR is just the normal skip case.
 
@@ -117,6 +117,15 @@ Write positions/cash observations to the mapped account. They are **anchors and 
   links to both bank events and both snapshots. Never infer from net liquidation,
   partial snapshots, amount/date alone, an unlinked legacy bank row, or a residual
   with another plausible cause.
+- **Reconcile funding consumed by documented FX:** a partial cash snapshot cannot
+  prove funding on its own, but a complete typed FX-conversion document can provide
+  a separate proof path. After privately confirming that an unnormalized bank
+  outflow's recipient/reference identifies this brokerage, use the fixed
+  `reconcile-funding-fx` operation when the positive FX destination amount and
+  authoritative document rate explain the entire source-currency outflow zero to
+  three days earlier within its fixed display-rounding tolerance. This creates the
+  brokerage funding inflow and negative FX source leg while preserving the positive
+  destination leg. Never use amount/date similarity or a partial conversion.
 - **Reconcile:** compare (a) the snapshot's per-symbol quantities against the trade-derived holdings on the mapped account, and (b) `get_account_summary` net-liquidation against Σ(position market values) + Σ(cash), in one currency. Material drift (≳1% — a missed trade, a corporate action, or history beyond the connector window) → **note it** in the summary and one line in `accounts.notes`. **Never** insert a balancing/plug row.
   Also guard against **double-feeding**: if another account's holdings substantially overlap the
   IBKR symbols/quantities (the same portfolio arriving twice — e.g. the wrapper broker's
@@ -148,7 +157,7 @@ INSERT INTO meta(key,value) VALUES('last_ibkr_at', datetime('now'))
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 ```
 
-- Append IBKR bullets to `data/last_sync_summary.md` under `## Ingested` (the same local summary sync uses; a later render relays it through Telegram only when configured). Emoji + ≤10 words, counts only: `📈 IBKR: 4 new trades, positions reconciled`. If a pre-window gap exists, add a second bullet: `📈 IBKR gap: history before <date> stays screenshot-sourced`.
+- Inside `sync-finance-data`, contribute one count-only IBKR line to its stdout report (`📈 IBKR: 4 new trades, positions reconciled`). If a pre-window gap exists, add a second line: `📈 IBKR gap: history before <date> stays screenshot-sourced`.
 - Print one stdout status line:
   - success → `IBKR: ok (<N> new trades, <M> positions, <K> cash currencies)`
   - skip → `IBKR: skipped (<reason>)`
@@ -157,7 +166,7 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 
 - **One economic account, multiple feeds.** Persist IBKR under `account_feeds`; attach it to a matching wrapper account instead of creating a duplicate. Multiple provider subaccounts are resolved independently.
 - **Read-only at IBKR.** Never draft, place, modify, or cancel an order, and never transfer or move funds. Use only the connector's reporting tools; deny any other tool when prompted.
-- **Interactive auth, best-effort chaining.** The IBKR connector authenticates only in a hands-on Claude session. `sync-finance-data` attempts this skill best-effort; unattended syncs skip with a warning bullet. Manual runs work any time.
+- **Signed-in auth, best-effort chaining.** The IBKR connector is reachable only from a signed-in Claude session. `sync-finance-data` attempts this skill best-effort; a session without the connector skips with a warning bullet. Manual runs work any time.
 - **No document, explicit provenance.** IBKR rows carry `source_doc_id=NULL`, while `account_feeds` and `(account_feed_id, source_key)` identify their origin. Canonical evidence—not row deletion—prevents cross-feed double-counting.
 - **Best-effort.** Connector missing / unauthenticated / unavailable → skip + report, never abort.
 - **Judgment over mechanics.** Account/feed mapping, cross-feed event matching, security identity, transfer classification and reconciliation are semantic decisions. Exact amount/date is useful evidence, never sufficient proof by itself.

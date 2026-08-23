@@ -1,7 +1,7 @@
 {
   "name": "findash",
   "version": "1.1.0",
-  "description": "Personal finance system as Claude skills: sync bank, document, and IBKR evidence into SQLite, explore it in a live local React dashboard, and optionally send a deterministic HTML snapshot to Telegram. Skills: setup, fetch-bank-data, fetch-investments, sync-finance-data, send-finance-dashboard, and findash-doctor.",
+  "description": "Personal finance system as Claude skills: sync bank, document, and IBKR evidence into SQLite, and explore it in a live local React dashboard. Skills: setup, fetch-bank-data, fetch-investments, sync-finance-data, and findash-doctor.",
   "author": {
     "name": "ya5huk"
   },

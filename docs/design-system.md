@@ -1,6 +1,6 @@
 # Design system — the booky dashboard
 
-Both the React dashboard and Telegram HTML snapshot should feel like a leather-bound ledger or a page from a finance manual at an old library: serif type, parchment background, hairline rules, generous whitespace, oldstyle figures. Luxurious by restraint, not by ornament.
+The React dashboard should feel like a leather-bound ledger or a page from a finance manual at an old library: serif type, parchment background, hairline rules, generous whitespace, oldstyle figures. Luxurious by restraint, not by ornament.
 
 ## Principles
 

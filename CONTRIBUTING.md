@@ -6,8 +6,8 @@ The project works today, but it is intentionally small. That leaves a lot of use
 
 - **More bank and card providers.** FinDash currently fetches data from Hapoalim and Cal, while `israeli-bank-scrapers` supports many more Israeli financial institutions. Adding more providers would make the automatic fetch flow useful to more people.
 - **Adapting beyond Israel.** FinDash is Israel-first (banks, ILS reporting, and payslip/retirement structure), while tax and dividend cash are source-recorded rather than assumed. The locale-specific touch points are listed in [Adapting to another country](README.md#adapting-to-another-country); PRs that generalize them — or that adapt the system to another country — are very welcome.
-- **More dashboard delivery options.** FinDash has a local React app and an optional self-contained Telegram snapshot. A packaged desktop-style viewer, another notification channel, or another delivery model would still be useful.
-- **Better packaging and setup.** There may be a cleaner way to package the skills, scripts, templates, local secrets, and dashboard output so users can get started with less manual setup.
+- **More dashboard delivery options.** FinDash has a local React app. A packaged desktop-style viewer, a notification channel, or another delivery model would still be useful.
+- **Better packaging and setup.** There may be a cleaner way to package the skills, scripts, dashboard app, and local secrets so users can get started with less manual setup.
 - **New finance views.** Cash flow, investment performance, source-document auditability, and category review can all be improved without making the system less private or less transparent.
 
 If you have a rough idea, open an issue. If you already know the shape of the change, PRs are welcome.

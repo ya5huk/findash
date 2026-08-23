@@ -29,7 +29,7 @@ rejected in favor of this simpler model.
 
 `scripts/refresh_prices.py` sends listed security symbols and ISO currencies to Yahoo Finance and caches
 closing prices, FX rates, and per-share distribution events. It does **not** send account identifiers,
-quantities, balances, transaction text, or credentials. The renderer itself performs no network access.
+quantities, balances, transaction text, or credentials. The dashboard model itself performs no network access.
 Each selected security also gets an aggregate refresh outcome (`success`, `empty`, or `failed`) so a
 confirmed non-dividend security is distinguishable from missing coverage. Failed refreshes keep the last
 known-good events and remain visibly incomplete; successful refreshes remove provider events that vanished.
@@ -49,7 +49,7 @@ Interactive Brokers connector** — Anthropic's certified IBKR connector, added 
 connector directory (a claude.ai connector, *not* declared in `plugin.json`; its tool names are
 connector-specific, discovered at run time). **Interactive auth:** it authenticates solely in a hands-on
 Claude session. `sync-finance-data` attempts `fetch-investments` best-effort (gated on IBKR having been onboarded) —
-interactive runs pull fresh data; unattended runs skip with a `⚠️` summary warning (relayed through Telegram when configured).
+a session with the connector pulls fresh data; a session without it skips with a `⚠️` summary warning.
 Manual runs work any time. Read-only. IBKR is attached as an **account feed** to one logical findash account
 (see *Account mapping* below). Its raw trade observations remain in `trades`; canonical events prevent the same
 trade from being counted again when a wrapper statement also reports it. Positions snapshots are anchors and
@@ -127,6 +127,13 @@ them to the same logical account only when the evidence says they are one econom
   through the guarded `infer-brokerage-funding` operation. The resulting
   `inferred_transfer_links` retain the bank event and both snapshot anchors. A
   portfolio-value bump, partial cash read, or amount/date match alone is never proof.
+- **A complete FX document may prove where reviewed funding went.** When private
+  bank recipient/reference evidence identifies the brokerage and a typed conversion
+  document accounts for the whole source-currency outflow zero to three days later,
+  use the guarded `reconcile-funding-fx` operation. Its link keeps external funding
+  separate from the negative source-currency and positive destination-currency FX
+  legs. A partial screenshot, unexplained remainder, or amount/date match alone is
+  never sufficient.
 - **Cash-snapshot residuals can nominate dividends, not prove them.** Between two complete per-currency
   cash snapshots, advance the earlier anchor through confirmed cash events and trade settlements. Market
   price changes never affect cash. A remaining positive residual that aligns with modeled distributions,
@@ -158,5 +165,5 @@ The IBKR connector authenticates interactively, so it simply isn't there in a he
 not have added it at all. `fetch-investments` is **best-effort, like a bank source**: any failure (connector
 not connected, not authenticated, unavailable in this session, timeout) writes nothing, reports
 `IBKR: skipped (<reason>)`, and — when IBKR was previously onboarded — adds a `⚠️ IBKR skipped` warning
-bullet to the local summary, which Telegram relays when configured. Nothing aborts. The user adds/connects it via Claude's connector directory
+bullet to the run summary. Nothing aborts. The user adds/connects it via Claude's connector directory
 (and confirms with `/mcp`) when convenient, then reruns the skill by hand.

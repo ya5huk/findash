@@ -29,7 +29,6 @@ class CheckConfigTests(unittest.TestCase):
                 "\ufeff[drive]\nroot_folder_id=<folder id>\n"
                 "[hapoalim]\nuser_code=user\npassword=real\n"
                 "[cal]\nusername=user\npassword=changeme\n"
-                "[telegram]\nbot_token=token\nchat_id=chat\n"
                 "[pdf-passwords]\n*.pdf=<password>\n",
                 encoding="utf-8",
             )
@@ -37,7 +36,6 @@ class CheckConfigTests(unittest.TestCase):
         self.assertFalse(status["drive"])
         self.assertTrue(status["hapoalim"])
         self.assertFalse(status["cal"])
-        self.assertTrue(status["telegram"])
         self.assertFalse(status["pdf-passwords"])
 
     def test_refuses_symlinked_configuration(self):

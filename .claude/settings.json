@@ -1,14 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(scripts/send_telegram.sh:*)",
-      "Bash(scripts/drive.sh:*)",
       "Bash(node scripts/fetch_bank.js:*)",
-      "Bash(python3 scripts/adopt_rclone_config.py)",
       "Bash(python3 scripts/backup_database.py:*)",
-      "Bash(python3 scripts/bundle-assets.py)",
-      "Bash(python3 scripts/bundle-assets.py --check)",
       "Bash(python3 scripts/check_config.py)",
+      "Bash(python3 scripts/drive_root.py)",
       "Bash(python3 scripts/findash_db.py:*)",
       "Bash(python3 scripts/migrate_db.py)",
       "Bash(python3 scripts/migrate_db.py --init)",
@@ -16,20 +12,16 @@
       "Bash(python3 scripts/harden_permissions.py)",
       "Bash(python3 scripts/harden_permissions.py --include-browser-profile)",
       "Bash(scripts/install_node_deps.sh)",
-      "Bash(python3 scripts/install_launch_agent.py)",
       "Bash(python3 scripts/unlock_pdf.py:*)",
       "Bash(python3 scripts/staging_files.py:*)",
       "Bash(python3 scripts/xlsx_to_rows.py:*)",
       "Bash(python3 scripts/refresh_prices.py --range 1mo)",
-      "Bash(python3 scripts/render_dashboard.py)",
       "Bash(python3 scripts/dashboard_server.py:*)",
       "Bash(scripts/install_dashboard_deps.sh)",
       "Bash(./run_dashboard.sh)",
       "Bash(npm --prefix dashboard run build)",
       "Write(inbox/**)",
-      "Edit(inbox/**)",
-      "Write(data/last_sync_summary.md)",
-      "Edit(data/last_sync_summary.md)"
+      "Edit(inbox/**)"
     ],
     "deny": [
       "Read(.secrets/**)",
