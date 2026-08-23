@@ -15,6 +15,8 @@ plugin manifest (`.claude-plugin/plugin.json`).
   output. Sync reports its count-only summary on stdout and nowhere else.
 
 ### Changed
+- **Licensed under MIT.** The repository was public but carried an all-rights-reserved
+  notice; it is now genuinely open source.
 - **Google Drive moved to the official Drive connector.** Skills prepare, list, pull
   from, and file into the vault through Anthropic's Google Drive connector (added in
   Claude, scoped to `[drive] root_folder_id`). `scripts/drive_root.py` is the only way

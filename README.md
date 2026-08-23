@@ -234,4 +234,4 @@ Most interpretation lives in the skills' prompts rather than hard-coded rules, s
 
 ## License
 
-No open-source license is currently granted. All rights are reserved by the repository owner.
+[MIT](LICENSE). Clone it, fork it, adapt it to your own bank and country — see [Contributing](CONTRIBUTING.md).
