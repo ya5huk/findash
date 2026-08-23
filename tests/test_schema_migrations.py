@@ -300,7 +300,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         )
         self.assertEqual(validation_sql(), fresh)
 
@@ -336,7 +336,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -372,7 +372,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [6, 7, 8, 9, 10, 11, 12, 13, 14],
+            [6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -395,7 +395,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [7, 8, 9, 10, 11, 12, 13, 14],
+            [7, 8, 9, 10, 11, 12, 13, 14, 15],
         )
         self.assertEqual(index_sql(), fresh)
 
@@ -432,7 +432,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [8, 9, 10, 11, 12, 13, 14],
+            [8, 9, 10, 11, 12, 13, 14, 15],
         )
         self.assertEqual(schema_sql(), fresh)
 
@@ -461,7 +461,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [11, 12, 13, 14]
+            [migration.version for migration in applied], [11, 12, 13, 14, 15]
         )
         self.assertEqual(trigger_sql(), fresh)
 
@@ -499,7 +499,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [12, 13, 14]
+            [migration.version for migration in applied], [12, 13, 14, 15]
         )
         self.assertEqual(schema_sql(), fresh)
 
@@ -614,7 +614,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
 
-        self.assertEqual([migration.version for migration in applied], [13, 14])
+        self.assertEqual([migration.version for migration in applied], [13, 14, 15])
         self.assertEqual(schema_sql(), fresh)
 
     def test_fresh_v14_inferred_transfer_schema_matches_migration(self) -> None:
@@ -647,7 +647,42 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
 
-        self.assertEqual([migration.version for migration in applied], [14])
+        self.assertEqual([migration.version for migration in applied], [14, 15])
+        self.assertEqual(schema_sql(), fresh)
+
+    def test_fresh_v15_funding_fx_schema_matches_migration(self) -> None:
+        connection = self.create_current()
+        self.addCleanup(connection.close)
+
+        names = (
+            "funding_fx_links",
+            "funding_fx_links_valid_insert",
+            "funding_fx_links_valid_update",
+            "canonical_events_funding_fx_identity_update",
+        )
+
+        def schema_sql() -> dict[str, str]:
+            placeholders = ",".join("?" for _ in names)
+            return {
+                f"{kind}:{name}": " ".join(str(sql).split())
+                for kind, name, sql in connection.execute(
+                    f"""SELECT type,name,sql FROM sqlite_master
+                         WHERE name IN ({placeholders})""",
+                    names,
+                )
+            }
+
+        fresh = schema_sql()
+        connection.execute(
+            "DROP TRIGGER canonical_events_funding_fx_identity_update"
+        )
+        connection.execute("DROP TABLE funding_fx_links")
+        connection.execute("DELETE FROM schema_migrations WHERE version=15")
+        connection.commit()
+
+        applied = apply_migrations(connection)
+
+        self.assertEqual([migration.version for migration in applied], [15])
         self.assertEqual(schema_sql(), fresh)
 
     def test_v12_distribution_refresh_status_is_validated(self) -> None:
@@ -728,7 +763,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
         self.assertEqual(
-            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14]
+            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15]
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -819,7 +854,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [10, 11, 12, 13, 14]
+            [migration.version for migration in applied], [10, 11, 12, 13, 14, 15]
         )
         self.assertEqual(validation_sql(), fresh)
 
@@ -1293,7 +1328,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
         self.assertEqual(
-            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14]
+            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15]
         )
         feeds = connection.execute(
             """SELECT DISTINCT feed.account_id,feed.provider,feed.feed_type

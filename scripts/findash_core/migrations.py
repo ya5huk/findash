@@ -23,7 +23,10 @@ from .migration_market import (
     _migration_12_security_distributions,
     _migration_13_market_observations,
 )
-from .migration_transfers import _migration_14_inferred_account_transfers
+from .migration_transfers import (
+    _migration_14_inferred_account_transfers,
+    _migration_15_funding_fx_links,
+)
 from .migration_support import (
     LATEST_SCHEMA_VERSION,
     Migration,
@@ -74,6 +77,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         14,
         "inferred_account_transfers",
         _migration_14_inferred_account_transfers,
+    ),
+    Migration(
+        15,
+        "funding_fx_links",
+        _migration_15_funding_fx_links,
     ),
 )
 

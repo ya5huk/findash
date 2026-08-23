@@ -179,6 +179,47 @@ Re-running the same request is a no-op. A partial snapshot, unexplained remainde
 missing bank evidence, competing destination, or already-linked transfer fails the
 whole operation.
 
+## Reviewed funding followed by FX
+
+Use this fixed operation when a reviewed owned-account bank outflow funds a
+brokerage and a complete brokerage FX document shows that the same source-currency
+cash was converted within three days. This is the evidence path for cases where
+the brokerage snapshots are partial: the bank movement proves external funding,
+while the conversion document proves both internal cash legs.
+
+```json
+{
+  "operation": "reconcile_funding_fx",
+  "bank_transaction_id": 0,
+  "fx_destination_transaction_id": 0,
+  "brokerage_account_id": 0,
+  "confirmed_same_owned_transfer": true,
+  "confirmed_complete_conversion": true
+}
+```
+
+The bank row must be an unnormalized negative transfer with source-document
+evidence. The FX destination row must be an unnormalized positive cash observation
+from a typed FX-conversion document, on the reviewed brokerage account, in another
+currency. A same-day authoritative document rate must convert it to the bank
+outflow within the fixed two-minor-unit display-rounding tolerance.
+Recipient/reference review must establish the owned brokerage relationship;
+amount/date similarity alone is insufficient.
+
+Run:
+
+```bash
+python3 scripts/findash_db.py reconcile-funding-fx inbox/staging/operations/<request>.json
+```
+
+The operation atomically records the bank outflow, equal brokerage funding inflow,
+negative source-currency FX leg, and positive destination-currency FX leg. It links
+all four in `funding_fx_links`, preserves the original raw rows and documents, and
+is idempotent. External-capital calculations count only the brokerage funding
+inflow. Brokerage cash reconstruction also applies the two FX legs, so conversion
+reduces source-currency cash and raises destination-currency cash without changing
+external funding.
+
 Always delete the request after the command finishes, whether it succeeded or failed:
 
 ```bash

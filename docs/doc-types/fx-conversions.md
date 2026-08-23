@@ -10,7 +10,7 @@ Screenshot from your brokerage's app showing a single ILS↔USD conversion happe
 
 The full money path looks like:
 
-1. **ILS Hapoalim → ILS brokerage** (external funding; recorded from the source that reports the deposit)
+1. **ILS Hapoalim → ILS brokerage** (external funding; recorded directly or through the reviewed bank+FX reconciliation)
 2. **ILS brokerage → USD brokerage** ← the FX screenshot captures this leg
 3. **Buy stocks**, reducing the brokerage's USD cash; tracked via `trades` rows
 

@@ -136,3 +136,135 @@ def _migration_14_inferred_account_transfers(
              SELECT RAISE(ABORT, 'inferred transfer snapshot is immutable');
            END"""
     )
+
+
+def _migration_15_funding_fx_links(connection: sqlite3.Connection) -> None:
+    """Link external funding to a fully evidenced internal FX conversion."""
+
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS funding_fx_links (
+             bank_outflow_event_id       INTEGER PRIMARY KEY
+                                           REFERENCES canonical_events(id)
+                                           ON DELETE RESTRICT,
+             brokerage_inflow_event_id   INTEGER NOT NULL UNIQUE
+                                           REFERENCES canonical_events(id)
+                                           ON DELETE RESTRICT,
+             fx_source_event_id          INTEGER NOT NULL UNIQUE
+                                           REFERENCES canonical_events(id)
+                                           ON DELETE RESTRICT,
+             fx_destination_event_id     INTEGER NOT NULL UNIQUE
+                                           REFERENCES canonical_events(id)
+                                           ON DELETE RESTRICT,
+             match_method                TEXT NOT NULL
+                                           CHECK (length(trim(match_method)) > 0),
+             created_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    valid_link = """EXISTS (
+      SELECT 1
+        FROM canonical_events AS bank_outflow
+        JOIN canonical_events AS brokerage_inflow
+          ON brokerage_inflow.id=NEW.brokerage_inflow_event_id
+        JOIN canonical_events AS fx_source
+          ON fx_source.id=NEW.fx_source_event_id
+        JOIN canonical_events AS fx_destination
+          ON fx_destination.id=NEW.fx_destination_event_id
+        JOIN accounts AS bank_account ON bank_account.id=bank_outflow.account_id
+        JOIN accounts AS brokerage_account
+          ON brokerage_account.id=brokerage_inflow.account_id
+       WHERE bank_outflow.id=NEW.bank_outflow_event_id
+         AND bank_outflow.event_type='cash'
+         AND bank_outflow.flow_type='transfer'
+         AND bank_outflow.status='confirmed'
+         AND bank_outflow.amount_minor<0
+         AND EXISTS (
+           SELECT 1 FROM event_evidence
+            WHERE canonical_event_id=bank_outflow.id
+         )
+         AND bank_account.kind<>'brokerage'
+         AND brokerage_account.kind='brokerage'
+         AND brokerage_inflow.event_type='cash'
+         AND brokerage_inflow.flow_type='transfer'
+         AND brokerage_inflow.status='confirmed'
+         AND brokerage_inflow.amount_minor=-bank_outflow.amount_minor
+         AND brokerage_inflow.currency=bank_outflow.currency
+         AND brokerage_inflow.occurred_on=bank_outflow.occurred_on
+         AND brokerage_inflow.component='cash_' || lower(brokerage_inflow.currency)
+         AND fx_source.account_id=brokerage_inflow.account_id
+         AND fx_source.event_type='cash'
+         AND fx_source.flow_type='investment'
+         AND lower(COALESCE(fx_source.category,''))='fx'
+         AND fx_source.status='confirmed'
+         AND fx_source.amount_minor=-brokerage_inflow.amount_minor
+         AND fx_source.currency=brokerage_inflow.currency
+         AND fx_source.component='cash_' || lower(fx_source.currency)
+         AND fx_source.occurred_on>=brokerage_inflow.occurred_on
+         AND fx_source.occurred_on<=date(brokerage_inflow.occurred_on,'+3 days')
+         AND fx_destination.account_id=brokerage_inflow.account_id
+         AND fx_destination.event_type='cash'
+         AND fx_destination.flow_type='investment'
+         AND lower(COALESCE(fx_destination.category,''))='fx'
+         AND fx_destination.status='confirmed'
+         AND fx_destination.amount_minor>0
+         AND fx_destination.currency<>fx_source.currency
+         AND fx_destination.component='cash_' || lower(fx_destination.currency)
+         AND fx_destination.occurred_on=fx_source.occurred_on
+         AND EXISTS (
+           SELECT 1
+             FROM event_evidence AS source_evidence
+             JOIN source_events AS source_observation
+               ON source_observation.id=source_evidence.source_event_id
+             JOIN event_evidence AS destination_evidence
+               ON destination_evidence.canonical_event_id=fx_destination.id
+             JOIN source_events AS destination_observation
+               ON destination_observation.id=destination_evidence.source_event_id
+             JOIN documents AS document
+               ON document.id=source_observation.source_doc_id
+            WHERE source_evidence.canonical_event_id=fx_source.id
+              AND destination_observation.source_doc_id=document.id
+              AND lower(replace(COALESCE(document.doc_type,''),'-','_'))
+                    IN ('fx_conversion','brokerage_fx_conversion')
+         )
+    )"""
+    for operation in ("insert", "update"):
+        update_columns = (
+            " OF bank_outflow_event_id, brokerage_inflow_event_id, "
+            "fx_source_event_id, fx_destination_event_id, match_method"
+            if operation == "update"
+            else ""
+        )
+        connection.execute(
+            f"""CREATE TRIGGER IF NOT EXISTS funding_fx_links_valid_{operation}
+                BEFORE {operation.upper()}{update_columns}
+                ON funding_fx_links
+                WHEN NOT ({valid_link})
+                BEGIN
+                  SELECT RAISE(ABORT, 'invalid funding FX link');
+                END"""
+        )
+    connection.execute(
+        """CREATE TRIGGER IF NOT EXISTS canonical_events_funding_fx_identity_update
+           BEFORE UPDATE OF account_id,event_type,occurred_on,currency,
+             amount_minor,flow_type,category,component,status
+           ON canonical_events
+           WHEN (
+             NEW.account_id IS NOT OLD.account_id
+             OR NEW.event_type IS NOT OLD.event_type
+             OR NEW.occurred_on IS NOT OLD.occurred_on
+             OR NEW.currency IS NOT OLD.currency
+             OR NEW.amount_minor IS NOT OLD.amount_minor
+             OR NEW.flow_type IS NOT OLD.flow_type
+             OR NEW.category IS NOT OLD.category
+             OR NEW.component IS NOT OLD.component
+             OR NEW.status IS NOT OLD.status
+           ) AND EXISTS (
+             SELECT 1 FROM funding_fx_links
+              WHERE bank_outflow_event_id=OLD.id
+                 OR brokerage_inflow_event_id=OLD.id
+                 OR fx_source_event_id=OLD.id
+                 OR fx_destination_event_id=OLD.id
+           )
+           BEGIN
+             SELECT RAISE(ABORT, 'linked funding FX economics are immutable');
+           END"""
+    )

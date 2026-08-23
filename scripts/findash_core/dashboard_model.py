@@ -467,15 +467,16 @@ class DashboardModelBuilder(DashboardChartsMixin):
             ),
             reverse=True,
         )
-        cumulative_reporting_amount = ZERO
-        cumulative_usd_amount = ZERO
+        cumulative_external_reporting_amount = ZERO
+        cumulative_external_usd_amount = ZERO
+        cumulative_usd_purchased_amount = ZERO
         for row in reversed(rows):
             external_transfer = row["kind"] in {
                 "brokerage_funding",
                 "brokerage_withdrawal",
             }
             if external_transfer and row["reporting_amount"] is not None:
-                cumulative_reporting_amount += Decimal(
+                cumulative_external_reporting_amount += Decimal(
                     str(row["reporting_amount"])
                 )
             if (
@@ -483,11 +484,24 @@ class DashboardModelBuilder(DashboardChartsMixin):
                 and row["currency"] == "USD"
                 and row["amount"] is not None
             ):
-                cumulative_usd_amount += Decimal(str(row["amount"]))
-            row["cumulative_reporting_amount"] = float(
-                cumulative_reporting_amount
+                cumulative_external_usd_amount += Decimal(str(row["amount"]))
+            if (
+                row["kind"] == "currency_purchase"
+                and row["currency"] == "USD"
+                and row["amount"] is not None
+            ):
+                cumulative_usd_purchased_amount += Decimal(str(row["amount"]))
+            row["cumulative_external_reporting_amount"] = float(
+                cumulative_external_reporting_amount
             )
-            row["cumulative_usd_amount"] = float(cumulative_usd_amount)
+            row["cumulative_usd_purchased_amount"] = float(
+                cumulative_usd_purchased_amount
+            )
+            # Compatibility aliases for older snapshot renderers.
+            row["cumulative_reporting_amount"] = float(
+                cumulative_external_reporting_amount
+            )
+            row["cumulative_usd_amount"] = float(cumulative_external_usd_amount)
         totals: dict[str, dict[str, Decimal | int]] = defaultdict(
             lambda: {
                 "count": 0,

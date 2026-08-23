@@ -35,6 +35,7 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 | `source_events` | stable feed observation | unique by `(account_feed_id, source_key)`; `source_key` is a provider id or document + row identity |
 | `event_evidence` | source↔canonical link | source of truth for normalization: two feeds can support one event without deleting either raw row; `aggregate` supports one-to-many statement/fill matching and therefore has no raw canonical pointer |
 | `trade_cash_links` | explicit cash↔trade relationship | says one confirmed canonical cash event exactly records settlement for one or more confirmed canonical trades; each trade has at most one settlement-cash event, avoiding ambiguous partial replacement |
+| `funding_fx_links` | reviewed bank funding↔brokerage FX relationship | preserves the bank outflow, equal brokerage inflow, negative source-currency FX leg, and positive destination-currency FX leg as four distinct events; FX changes cash composition, not external capital |
 | `positions` | (account, security, as_of) observation | as-reported checkpoint used as an anchor/reconciliation source when event history is incomplete—not a second portfolio to add |
 | `position_evidence` | source observation supporting a position | preserves overlapping wrapper/API snapshots while one `positions` row remains the chosen anchor; snapshot evidence can set `account_snapshot_complete=1` only when the same read covered every holding **and** every cash component for the account |
 | `prices` | (security, date) close | for valuation and benchmark comparison |
@@ -71,6 +72,15 @@ cash snapshots used to reconcile the interval. Both snapshots must come from the
 same active feed and be marked complete. The fixed gateway operation recomputes all
 known cash and trade movements before it permits the link; ordinary ingestion must
 not insert an unproven balancing event.
+
+When complete brokerage snapshots are unavailable, a complete FX-conversion
+document can provide a separate reviewed proof path. `funding_fx_links` joins the
+confirmed bank outflow, its equal positive brokerage funding inflow, and the two
+same-document internal FX cash legs. The operation requires reviewed owned-account
+recipient evidence, exact source-currency economics, an authoritative document
+rate, and a zero-to-three-day sequence. The external inflow changes contributed
+capital; the negative and positive FX legs only change the currencies held inside
+the brokerage.
 
 The link is an exact reviewed assertion. Cash and trades must share account and currency, be confirmed, and the cash date must be on or after every covered trade date. Its signed amount must equal the linked fills' economics—buy `= -(quantity × price_minor) - fees_minor`, sell `= quantity × price_minor - fees_minor`—within `max(1, number of fills)` minor units for fractional-fill rounding. Amount/date similarity alone never creates a link. Once linked, the events' dates, amounts, security, side, quantity, price, fees, currency, component, status, and other accounting identity are immutable; notes may still be edited. A correction requires explicit review rather than changing facts underneath the link. An unlinked cash event remains a separate movement. A linked trade stays derived before the posted cash date; from that date onward the explicit cash replaces it, so later evidence never rewrites earlier history.
 
@@ -196,3 +206,7 @@ Migration v14 adds guarded `inferred_transfer_links`. It permits a positive
 brokerage transfer only when confirmed bank evidence and two complete cash
 snapshots from one active feed reconcile the full interval. Linked event economics
 and snapshot identities become immutable.
+
+Migration v15 adds guarded `funding_fx_links` for a reviewed bank transfer followed
+by a complete documented brokerage conversion. It keeps external funding separate
+from the two internal FX cash legs and makes all linked economics immutable.

@@ -543,7 +543,7 @@ function ForexView({ data }) {
             2,
           )} net external capital
           {' · '}
-          {forex.purchase_count || 0} FX purchases excluded
+          {forex.purchase_count || 0} internal FX purchases
         </span>
       </header>
       <ForexActivityChart
@@ -563,17 +563,17 @@ function ForexView({ data }) {
           <table className="ledger forex-ledger">
             <caption>
               Latest {recentFunding.length} of {funding.length} activities · newest to oldest
-              {' · '}FX purchases do not change cumulative funding
+              {' · '}FX purchases move brokerage cash but do not change external capital
             </caption>
             <thead>
               <tr>
                 <th>Date</th>
                 <th>Type</th>
-                <th className="num">Foreign amount</th>
+                <th className="num">Movement amount</th>
                 <th className="num">Historical rate</th>
                 <th className="num">{data.reporting_currency} equivalent</th>
-                <th className="num">Cumulative USD</th>
-                <th className="num">Cumulative {data.reporting_currency}</th>
+                <th className="num">Cumulative USD purchased</th>
+                <th className="num">Cumulative external {data.reporting_currency}</th>
               </tr>
             </thead>
             <tbody>
@@ -604,12 +604,17 @@ function ForexView({ data }) {
                       : money(event.reporting_amount, data.reporting_currency, 2)}
                   </td>
                   <td className="num forex-cumulative-cell">
-                    {money(event.cumulative_usd_amount, 'USD', 2)}
-                    {event.kind === 'currency_purchase' && <small>unchanged</small>}
+                    {money(
+                      event.cumulative_usd_purchased_amount
+                        ?? event.cumulative_usd_amount,
+                      'USD',
+                      2,
+                    )}
                   </td>
                   <td className="num forex-cumulative-cell">
                     {money(
-                      event.cumulative_reporting_amount,
+                      event.cumulative_external_reporting_amount
+                        ?? event.cumulative_reporting_amount,
                       data.reporting_currency,
                       2,
                     )}

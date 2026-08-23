@@ -190,6 +190,14 @@ def _require_identity_guards(connection: sqlite3.Connection) -> None:
                 "balances_inferred_transfer_identity_update",
             }
         )
+    if _table_exists(connection, "funding_fx_links"):
+        required.update(
+            {
+                "funding_fx_links_valid_insert",
+                "funding_fx_links_valid_update",
+                "canonical_events_funding_fx_identity_update",
+            }
+        )
     required.update(
         {
             "balance_evidence_require_provenance_insert",
@@ -483,6 +491,31 @@ def _reject_inferred_transfer_dependencies(
         )
 
 
+def _reject_funding_fx_dependencies(
+    connection: sqlite3.Connection, account_id: int
+) -> None:
+    if not _table_exists(connection, "funding_fx_links"):
+        return
+    linked = int(
+        connection.execute(
+            """SELECT COUNT(*)
+                 FROM funding_fx_links AS link
+                 JOIN canonical_events AS bank_outflow
+                   ON bank_outflow.id=link.bank_outflow_event_id
+                 JOIN canonical_events AS brokerage_inflow
+                   ON brokerage_inflow.id=link.brokerage_inflow_event_id
+                WHERE bank_outflow.account_id=?
+                   OR brokerage_inflow.account_id=?""",
+            (account_id, account_id),
+        ).fetchone()[0]
+    )
+    if linked:
+        raise ReconciliationError(
+            "account has funding-FX dependencies that require separate review "
+            f"(links={linked})"
+        )
+
+
 def _event_evidence_rows(
     connection: sqlite3.Connection, source_account_id: int
 ) -> list[sqlite3.Row]:
@@ -762,6 +795,7 @@ def _run_reconciliation(
     _reject_inferred_transfer_dependencies(
         connection, request.source_account_id
     )
+    _reject_funding_fx_dependencies(connection, request.source_account_id)
     _validate_collisions(connection, request)
     _validate_anchor_resolutions(
         connection,

@@ -23,6 +23,10 @@ from findash_core.funding_reconciliation import (
     FundingReconciliationError,
     infer_brokerage_funding,
 )
+from findash_core.funding_fx_reconciliation import (
+    FundingFxReconciliationError,
+    reconcile_funding_fx,
+)
 from findash_core.migrations import MigrationError, require_current_schema
 from findash_core.reconciliation import (
     ReconciliationError,
@@ -198,6 +202,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="confirm bank transfers proven by complete brokerage cash snapshots",
     )
     funding.add_argument("file", type=_request_path)
+    funding_fx = sub.add_parser(
+        "reconcile-funding-fx",
+        help="link a reviewed bank transfer to a complete brokerage FX conversion",
+    )
+    funding_fx.add_argument("file", type=_request_path)
     sub.add_parser("integrity", help="run foreign-key and integrity checks")
     return parser.parse_args(argv)
 
@@ -230,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.file.read_text(encoding="utf-8"))
             counts = infer_brokerage_funding(DB, payload)
             print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
+        elif args.command == "reconcile-funding-fx":
+            payload = json.loads(args.file.read_text(encoding="utf-8"))
+            counts = reconcile_funding_fx(DB, payload)
+            print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
         else:
             con = connect_db(DB, readonly=True, migrate=False)
             try:
@@ -247,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         GatewayError,
         CorrectionError,
         FundingReconciliationError,
+        FundingFxReconciliationError,
         MigrationError,
         ReconciliationError,
         json.JSONDecodeError,
