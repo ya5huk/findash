@@ -122,13 +122,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         encoded = json.dumps(
             payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         ).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Cache-Control", "no-store, private")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store, private")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            self.close_connection = True
+            print(
+                "Dashboard browser disconnected before the response completed; "
+                "continuing.",
+                file=sys.stderr,
+            )
 
     def do_GET(self) -> None:
         if self.path == "/api/status":
@@ -141,13 +149,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             payload = build_live_dashboard_snapshot(
                 self.database, date.today().isoformat()
             )
-            payload["refresh"] = self.refresh_service.status()
-            self._json(payload)
         except (AccountingError, MigrationError, OSError, sqlite3.Error, ValueError):
             self._json(
                 {"error": "dashboard data is temporarily unavailable"},
                 HTTPStatus.SERVICE_UNAVAILABLE,
             )
+            return
+        payload["refresh"] = self.refresh_service.status()
+        self._json(payload)
 
     def do_POST(self) -> None:
         if self.path != "/api/refresh":

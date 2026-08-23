@@ -38,6 +38,41 @@ class MarketRefreshServiceTest(unittest.TestCase):
             dashboard_server.MarketRefreshService(59)
 
 
+class DashboardRequestHandlerTest(unittest.TestCase):
+    def test_client_disconnect_is_reported_without_raising(self):
+        handler = object.__new__(dashboard_server.DashboardRequestHandler)
+        handler.close_connection = False
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock(side_effect=BrokenPipeError)
+        handler.wfile = MagicMock()
+        output = io.StringIO()
+
+        with redirect_stderr(output):
+            handler._json({"ok": True})
+
+        self.assertTrue(handler.close_connection)
+        self.assertIn("browser disconnected", output.getvalue())
+        handler.wfile.write.assert_not_called()
+
+    def test_response_write_errors_do_not_trigger_a_second_response(self):
+        handler = object.__new__(dashboard_server.DashboardRequestHandler)
+        handler.path = "/api/dashboard"
+        handler.database = MagicMock()
+        handler.refresh_service = MagicMock()
+        handler._json = MagicMock(side_effect=OSError("write failed"))
+
+        with patch.object(
+            dashboard_server,
+            "build_live_dashboard_snapshot",
+            return_value={},
+        ):
+            with self.assertRaisesRegex(OSError, "write failed"):
+                handler.do_GET()
+
+        handler._json.assert_called_once()
+
+
 class ServerArgumentsTest(unittest.TestCase):
     def test_non_localhost_binding_is_rejected_before_database_access(self):
         with patch.object(dashboard_server, "connect_db") as connect:
