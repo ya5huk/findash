@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # filenames, and ensure both staging queues required by setup exist.
 PRIVATE_DIRS = (
     "data",
+    "data/backups",
     "inbox",
     "inbox/staging/fetched",
     "inbox/staging/drive",
@@ -28,7 +29,6 @@ PRIVATE_DIRS = (
     "output",
     ".secrets",
 )
-PRIVATE_FILES = ("rclone.conf",)
 
 
 def has_symlink_component(base: Path, path: Path) -> bool:
@@ -77,17 +77,6 @@ def secure_tree(path: Path) -> tuple[int, int]:
     return changed, unsafe_symlinks
 
 
-def secure_file(path: Path) -> tuple[int, int]:
-    if not path.exists() and not path.is_symlink():
-        return 0, 0
-    if path.is_symlink() or not path.is_file():
-        return 0, 1
-    if stat.S_IMODE(path.stat().st_mode) == 0o600:
-        return 0, 0
-    path.chmod(0o600)
-    return 1, 0
-
-
 def harden(root: Path, browser_cache: Path | None = None) -> tuple[int, int]:
     changed = unsafe = 0
     if root.is_symlink():
@@ -98,10 +87,6 @@ def harden(root: Path, browser_cache: Path | None = None) -> tuple[int, int]:
             unsafe += 1
             continue
         c, u = secure_tree(path)
-        changed += c
-        unsafe += u
-    for relative in PRIVATE_FILES:
-        c, u = secure_file(root / relative)
         changed += c
         unsafe += u
     if browser_cache is not None and (browser_cache.exists() or browser_cache.is_symlink()):

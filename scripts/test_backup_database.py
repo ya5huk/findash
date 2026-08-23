@@ -1,4 +1,4 @@
-"""Tests for the WAL-safe local snapshot portion of backup_database.py."""
+"""Tests for the WAL-safe local snapshot backup in backup_database.py."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import io
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr
-from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("backup_database.py")
@@ -18,6 +18,14 @@ SPEC = importlib.util.spec_from_file_location("backup_database", MODULE_PATH)
 assert SPEC and SPEC.loader
 backup_database = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backup_database)
+
+
+def _seed_database(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE facts(value TEXT)")
+    connection.execute("INSERT INTO facts VALUES ('kept')")
+    connection.commit()
+    connection.close()
 
 
 class ConsistentSnapshotTests(unittest.TestCase):
@@ -72,44 +80,34 @@ class ConsistentSnapshotTests(unittest.TestCase):
                 source.close()
             self.assertEqual(os.stat(snapshot_path).st_mode & 0o777, 0o600)
 
-    def test_full_backup_uploads_snapshot_twice_then_stamps_gate(self):
+    def test_full_backup_writes_private_local_archive_then_stamps_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root / "data"
-            scripts = root / "scripts"
             data.mkdir()
-            scripts.mkdir()
             database_path = data / "finance.db"
-            connection = sqlite3.connect(database_path)
-            connection.execute("CREATE TABLE facts(value TEXT)")
-            connection.execute("INSERT INTO facts VALUES ('kept')")
-            connection.commit()
-            connection.close()
+            _seed_database(database_path)
 
-            log = root / "drive.log"
-            fake_drive = scripts / "drive.sh"
-            fake_drive.write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >> {log!s}\n"
-                "[ \"$1\" = ls ] && printf '[]\\n'\n"
-                "exit 0\n"
-            )
-            fake_drive.chmod(0o700)
-
-            old = (backup_database.ROOT, backup_database.DB_PATH, backup_database.DRIVE)
+            old = (backup_database.ROOT, backup_database.DB_PATH)
             backup_database.ROOT = root
             backup_database.DB_PATH = database_path
-            backup_database.DRIVE = fake_drive
             try:
                 self.assertEqual(backup_database.main(["--force"]), 0)
             finally:
-                backup_database.ROOT, backup_database.DB_PATH, backup_database.DRIVE = old
+                backup_database.ROOT, backup_database.DB_PATH = old
 
-            calls = log.read_text().splitlines()
-            push_calls = [line for line in calls if line.startswith("push ")]
-            self.assertEqual(len(push_calls), 2)
-            uploaded_path = Path(push_calls[0].split()[1])
-            self.assertFalse(uploaded_path.exists())
+            backups = data / "backups"
+            self.assertEqual(stat.S_IMODE(backups.stat().st_mode), 0o700)
+            archives = sorted(backups.iterdir())
+            self.assertEqual(len(archives), 1)
+            self.assertRegex(archives[0].name, backup_database.BACKUP_NAME)
+            self.assertEqual(stat.S_IMODE(archives[0].stat().st_mode), 0o600)
+            archive = sqlite3.connect(archives[0])
+            try:
+                self.assertEqual(archive.execute("SELECT value FROM facts").fetchall(), [("kept",)])
+            finally:
+                archive.close()
+            self.assertEqual(list(data.glob(".finance-backup-*.db")), [])
             connection = sqlite3.connect(database_path)
             try:
                 self.assertIsNotNone(
@@ -119,6 +117,28 @@ class ConsistentSnapshotTests(unittest.TestCase):
                 )
             finally:
                 connection.close()
+
+    def test_fresh_backup_is_skipped_without_the_force_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            database_path = data / "finance.db"
+            _seed_database(database_path)
+            connection = sqlite3.connect(database_path)
+            connection.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            connection.execute("INSERT INTO meta VALUES('last_db_backup_at', datetime('now'))")
+            connection.commit()
+            connection.close()
+
+            old = (backup_database.ROOT, backup_database.DB_PATH)
+            backup_database.ROOT = root
+            backup_database.DB_PATH = database_path
+            try:
+                self.assertEqual(backup_database.main([]), 0)
+            finally:
+                backup_database.ROOT, backup_database.DB_PATH = old
+            self.assertFalse((data / "backups").exists())
 
     def test_full_backup_rejects_foreign_key_violations_without_leaking_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,11 +167,8 @@ class ConsistentSnapshotTests(unittest.TestCase):
             backup_database.DB_PATH = database_path
             stderr = io.StringIO()
             try:
-                with mock.patch.object(backup_database, "drive") as drive, redirect_stderr(
-                    stderr
-                ):
+                with redirect_stderr(stderr):
                     self.assertEqual(backup_database.main(["--force"]), 1)
-                drive.assert_not_called()
             finally:
                 backup_database.ROOT, backup_database.DB_PATH = old
 
@@ -176,6 +193,7 @@ class ConsistentSnapshotTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(list(data.glob(".finance-backup-*.db")), [])
+            self.assertEqual(list((data / "backups").glob("finance-*.db")), [])
 
     def test_backup_refuses_symlinked_sqlite_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -183,10 +201,7 @@ class ConsistentSnapshotTests(unittest.TestCase):
             data = root / "data"
             data.mkdir()
             database_path = data / "finance.db"
-            connection = sqlite3.connect(database_path)
-            connection.execute("CREATE TABLE facts(value TEXT)")
-            connection.commit()
-            connection.close()
+            _seed_database(database_path)
             outside = root / "outside-wal"
             outside.write_bytes(b"keep")
             Path(f"{database_path}-wal").symlink_to(outside)
@@ -202,33 +217,59 @@ class ConsistentSnapshotTests(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), b"keep")
             self.assertEqual(list(data.glob(".finance-backup-*.db")), [])
 
-    def test_prune_ignores_unexpected_listing_entries(self):
-        listing = mock.Mock(returncode=0, stdout='[null, 7, {"Name": null}]')
-        with mock.patch.object(backup_database, "drive", return_value=listing):
-            backup_database.prune_old_backups(8)
+    def test_backup_refuses_symlinked_backup_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            data.mkdir()
+            database_path = data / "finance.db"
+            _seed_database(database_path)
+            elsewhere = root / "elsewhere"
+            elsewhere.mkdir()
+            (data / "backups").symlink_to(elsewhere, target_is_directory=True)
 
-    def test_prune_orders_valid_archives_by_filename_not_nullable_modtime(self):
-        listing = mock.Mock(
-            returncode=0,
-            stdout=(
-                '[{"Name":"finance-2026-01-01-000000.db",'
-                '"ModTime":"2999-01-01T00:00:00Z"},'
-                '{"Name":"finance-2026-01-08-000000.db","ModTime":null}]'
-            ),
-        )
-        calls = []
+            old = (backup_database.ROOT, backup_database.DB_PATH)
+            backup_database.ROOT = root
+            backup_database.DB_PATH = database_path
+            stderr = io.StringIO()
+            try:
+                with redirect_stderr(stderr):
+                    self.assertEqual(backup_database.main(["--force"]), 1)
+            finally:
+                backup_database.ROOT, backup_database.DB_PATH = old
+            self.assertIn("must not be a symlink", stderr.getvalue())
+            self.assertEqual(list(elsewhere.iterdir()), [])
 
-        def fake_drive(*args, **kwargs):
-            calls.append((args, kwargs))
-            if args[0] == "ls":
-                return listing
-            return mock.Mock(returncode=0)
+    def test_prune_orders_valid_archives_by_filename_and_ignores_other_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            older = directory / "finance-2026-01-01-000000.db"
+            newer = directory / "finance-2026-01-08-000000.db"
+            stranger = directory / "notes.txt"
+            for entry in (older, newer, stranger):
+                entry.write_bytes(b"x")
+            # A misleading modification time must not override the name order.
+            os.utime(older, (4_102_444_800, 4_102_444_800))
 
-        with mock.patch.object(backup_database, "drive", side_effect=fake_drive):
-            backup_database.prune_old_backups(1)
+            backup_database.prune_old_backups(1, directory)
 
-        deleted = [args[1] for args, _kwargs in calls if args[0] == "delete"]
-        self.assertEqual(deleted, ["backups/finance-2026-01-01-000000.db"])
+            self.assertFalse(older.exists())
+            self.assertTrue(newer.exists())
+            self.assertTrue(stranger.exists())
+
+    def test_prune_skips_missing_or_symlinked_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            target = directory / "real"
+            target.mkdir()
+            (target / "finance-2026-01-01-000000.db").write_bytes(b"x")
+            link = directory / "link"
+            link.symlink_to(target, target_is_directory=True)
+
+            backup_database.prune_old_backups(0, link)
+            backup_database.prune_old_backups(0, directory / "missing")
+
+            self.assertTrue((target / "finance-2026-01-01-000000.db").exists())
 
 
 if __name__ == "__main__":

@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Create and upload a consistent weekly SQLite backup.
+"""Create a consistent weekly SQLite backup under ``data/backups/``.
 
 The live database uses WAL mode, so copying only ``finance.db`` can omit
 committed pages that still live in ``finance.db-wal``.  This command uses
 SQLite's online backup API to produce one closed, self-contained database,
-checks it, uploads that snapshot twice, then removes the local temporary copy.
+checks it, stores it as ``data/backups/finance-<timestamp>.db`` (mode 600),
+stamps the seven-day gate, and prunes older archives to the newest N.
 
+Nothing leaves the machine: keep ``data/`` inside whatever disk or folder
+backup you already trust.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -24,8 +25,11 @@ from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "finance.db"
-DRIVE = ROOT / "scripts" / "drive.sh"
 BACKUP_NAME = re.compile(r"^finance-\d{4}-\d{2}-\d{2}-\d{6}\.db$")
+
+
+def backup_dir() -> Path:
+    return DB_PATH.parent / "backups"
 
 
 def create_consistent_snapshot(source_path: Path, destination_path: Path) -> None:
@@ -69,58 +73,37 @@ def backup_is_fresh(connection: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def drive(*args: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(DRIVE), *args],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        capture_output=capture,
-    )
-
-
-def prune_old_backups(retain: int) -> None:
-    try:
-        listing = drive("ls", "backups/", capture=True)
-    except OSError:
-        print("Backup prune: skipped (Drive command unavailable)")
+def prune_old_backups(retain: int, directory: Path | None = None) -> None:
+    directory = directory if directory is not None else backup_dir()
+    if directory.is_symlink() or not directory.is_dir():
+        print("Backup prune: skipped (backup directory unavailable)")
         return
-    if listing.returncode != 0:
-        print("Backup prune: skipped (Drive listing failed)")
-        return
-    try:
-        entries = json.loads(listing.stdout)
-    except (TypeError, json.JSONDecodeError):
-        print("Backup prune: skipped (unexpected Drive listing)")
-        return
-
-    if not isinstance(entries, list):
-        print("Backup prune: skipped (unexpected Drive listing)")
-        return
-    backups = [
-        item
-        for item in entries
-        if isinstance(item, dict)
-        and not item.get("IsDir")
-        and isinstance(item.get("Name"), str)
-        and BACKUP_NAME.fullmatch(item["Name"])
-    ]
     # The validated timestamp in the immutable archive name is the retention
-    # authority. Drive metadata may be absent, malformed, or changed later.
-    backups.sort(key=lambda item: item["Name"], reverse=True)
+    # authority; file modification times can be changed by copies and restores.
+    archives = sorted(
+        (
+            entry
+            for entry in directory.iterdir()
+            if BACKUP_NAME.fullmatch(entry.name) and entry.is_file() and not entry.is_symlink()
+        ),
+        key=lambda entry: entry.name,
+        reverse=True,
+    )
     failed = 0
-    for item in backups[retain:]:
-        result = drive("delete", f"backups/{item['Name']}", capture=True)
-        failed += result.returncode != 0
+    for entry in archives[retain:]:
+        try:
+            entry.unlink()
+        except OSError:
+            failed += 1
     if failed:
         print(f"Backup prune: {failed} old backup(s) could not be removed")
-    elif len(backups) > retain:
-        print(f"Backup prune: removed {len(backups) - retain} old backup(s)")
+    elif len(archives) > retain:
+        print(f"Backup prune: removed {len(archives) - retain} old backup(s)")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Upload a WAL-safe SQLite snapshot to the configured Drive vault."
+        description="Store a WAL-safe SQLite snapshot under data/backups/."
     )
     parser.add_argument("--force", action="store_true", help="ignore the seven-day gate")
     parser.add_argument(
@@ -128,7 +111,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=int,
         default=8,
         metavar="N",
-        help="number of timestamped Drive snapshots to retain (default: 8)",
+        help="number of timestamped local snapshots to retain (default: 8)",
     )
     args = parser.parse_args(argv)
     if args.retain < 1 or args.retain > 100:
@@ -137,7 +120,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    args = parse_args(sys.argv[1:] if argv is None else argv)
     os.umask(0o077)
 
     unsafe_sidecar = any(
@@ -166,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
             print("Backup: skipped (fresh)")
             return 0
 
+        directory = backup_dir()
+        if directory.is_symlink():
+            print("Backup: failed (data/backups must not be a symlink)", file=sys.stderr)
+            return 1
+        directory.mkdir(mode=0o700, exist_ok=True)
+
         fd, raw_path = tempfile.mkstemp(
             prefix=".finance-backup-", suffix=".db", dir=DB_PATH.parent
         )
@@ -174,21 +163,20 @@ def main(argv: list[str] | None = None) -> int:
         create_consistent_snapshot(DB_PATH, snapshot_path)
 
         stamp = datetime.now().astimezone().strftime("%Y-%m-%d-%H%M%S")
-        current = drive("push", str(snapshot_path), "finance.db", capture=True)
-        archived = drive(
-            "push", str(snapshot_path), f"backups/finance-{stamp}.db", capture=True
-        )
-        if current.returncode != 0 or archived.returncode != 0:
-            print("Backup: failed (Drive upload failed)", file=sys.stderr)
-            return 1
+        archive = directory / f"finance-{stamp}.db"
+        if archive.exists() or archive.is_symlink():
+            raise RuntimeError("an archive with this timestamp already exists")
+        os.replace(snapshot_path, archive)
+        snapshot_path = None
+        os.chmod(archive, 0o600)
 
         control.execute(
             """INSERT INTO meta(key, value) VALUES('last_db_backup_at', datetime('now'))
                ON CONFLICT(key) DO UPDATE SET value=excluded.value"""
         )
         control.commit()
-        print("Backup: done (consistent SQLite snapshot)")
-        prune_old_backups(args.retain)
+        print("Backup: done (local consistent SQLite snapshot)")
+        prune_old_backups(args.retain, directory)
         return 0
     except (OSError, sqlite3.Error, RuntimeError) as exc:
         print(f"Backup: failed ({exc})", file=sys.stderr)
