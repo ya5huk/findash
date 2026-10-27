@@ -33,6 +33,13 @@ plugin manifest (`.claude-plugin/plugin.json`).
   was just opened. The dashboard server runs the light refresh every 5 minutes
   between full 30-minute refreshes.
 
+### Fixed
+- **Cost basis survives a snapshot without average cost.** When the latest position
+  snapshot omits `avg_cost`, the valuation keeps the most recent reported basis as
+  long as the quantity is unchanged and no trade happened in between, instead of
+  showing every holding's cost and gain as unavailable. `fetch-investments` now
+  always sends `avg_cost` when the connector reports one.
+
 ### Removed
 - **Single-purpose funding operations.** `infer-brokerage-funding` and
   `reconcile-funding-fx` (and their modules) are replaced by `transfer` and

@@ -487,6 +487,55 @@ class AccountingEngineTest(unittest.TestCase):
             {("AAA", Decimal("2")), ("BBB", Decimal("3"))},
         )
 
+    def _cost_snapshots(self, later_quantity: int = 10):
+        con = self.open_database()
+        aid = account(con, "Broker", "brokerage", "USD")
+        sid = security(con, "AAA")
+        con.executemany(
+            """INSERT INTO positions(
+                   account_id,security_id,as_of,quantity,avg_cost_minor,
+                   market_price_minor,market_value_minor,currency
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            [
+                (aid, sid, "2026-01-01", 10, 800, 1_000, 10_000, "USD"),
+                (
+                    aid, sid, "2026-01-03", later_quantity, None, 1_100,
+                    later_quantity * 1_100, "USD",
+                ),
+            ],
+        )
+        return con, aid, sid
+
+    def test_cost_less_snapshot_keeps_unchanged_earlier_basis(self):
+        con, _, _ = self._cost_snapshots()
+
+        position = AccountingEngine(con, "USD").state_at("2026-01-03").positions[0]
+
+        self.assertEqual(position.anchor_date, "2026-01-03")
+        self.assertEqual(position.average_cost_minor, Decimal("800"))
+        self.assertEqual(position.reporting_cost_basis_minor, Decimal("8000"))
+
+    def test_cost_less_snapshot_after_a_trade_leaves_basis_unknown(self):
+        con, aid, sid = self._cost_snapshots()
+        con.execute(
+            """INSERT INTO trades(
+                   account_id,security_id,date,side,shares,price_minor,
+                   fees_minor,currency
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (aid, sid, "2026-01-02", "buy", 1, 1_000, 0, "USD"),
+        )
+
+        position = AccountingEngine(con, "USD").state_at("2026-01-03").positions[0]
+
+        self.assertIsNone(position.average_cost_minor)
+
+    def test_cost_less_snapshot_with_new_quantity_leaves_basis_unknown(self):
+        con, _, _ = self._cost_snapshots(later_quantity=12)
+
+        position = AccountingEngine(con, "USD").state_at("2026-01-03").positions[0]
+
+        self.assertIsNone(position.average_cost_minor)
+
     def test_position_snapshot_does_not_reset_partial_cash_reconstruction(self):
         con = self.open_database()
         aid = account(con, "Broker", "brokerage", "USD")

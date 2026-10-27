@@ -96,11 +96,58 @@ class BrokerageHoldingsMixin:
             rows = [row for row in rows if str(row["as_of"]) >= opened_on]
         return [dict(row) for row in rows]
 
+    def _carried_avg_cost(
+        self, account_id: int, snap: dict, trades: list[dict]
+    ) -> Optional[tuple[Decimal, str]]:
+        """An earlier reported average cost that still holds at a cost-less anchor.
+
+        Average cost only moves with trades, so a basis reported for the same
+        quantity, with no trade and no differing snapshot in between, is still
+        the basis. Returns the per-unit cost and the date it was reported.
+        """
+
+        security_id = int(snap["security_id"])
+        quantity = _decimal(snap["quantity"])
+        prior = self.con.execute(
+            """SELECT as_of,quantity,avg_cost_minor,currency FROM positions
+                WHERE account_id=? AND security_id=? AND as_of<?
+                  AND avg_cost_minor IS NOT NULL
+                ORDER BY as_of DESC LIMIT 1""",
+            (account_id, security_id, snap["as_of"]),
+        ).fetchone()
+        if prior is None:
+            return None
+        prior_date = str(prior["as_of"])
+        opened_on = self._account_history_start(account_id)
+        if (
+            (opened_on and prior_date < opened_on)
+            or _decimal(prior["quantity"]) != quantity
+            or canonical_currency(prior["currency"])
+            != canonical_currency(snap["currency"])
+        ):
+            return None
+        quantity_changed_between = self.con.execute(
+            """SELECT 1 FROM positions
+                WHERE account_id=? AND security_id=? AND as_of>? AND as_of<?
+                  AND quantity<>?
+                LIMIT 1""",
+            (account_id, security_id, prior_date, snap["as_of"], float(quantity)),
+        ).fetchone()
+        traded_between = any(
+            int(trade["security_id"]) == security_id
+            and prior_date < trade["date"] <= snap["as_of"]
+            for trade in trades
+        )
+        if quantity_changed_between or traded_between:
+            return None
+        return _decimal(prior["avg_cost_minor"]), prior_date
+
     def _holdings(self, account: sqlite3.Row, as_of: str) -> list[Holding]:
         snapshots = self._position_snapshots(account["id"], as_of)
         complete_account_date = self._latest_complete_account_snapshot_date(
             int(account["id"]), as_of
         )
+        trades = self.trades(account["id"], as_of)
         holdings: dict[int, Holding] = {}
         for snap in snapshots:
             # A newer reviewed account-wide snapshot says every omitted security
@@ -112,6 +159,7 @@ class BrokerageHoldingsMixin:
             anchor_date = snap["as_of"]
             quantity = _decimal(snap["quantity"])
             currency = canonical_currency(snap["currency"])
+            cost_date = anchor_date
             if quantity == ZERO:
                 # An explicit zero closes a complete snapshot segment. Its basis is
                 # known zero even when a per-share average is naturally absent.
@@ -119,9 +167,16 @@ class BrokerageHoldingsMixin:
             elif snap["avg_cost_minor"] is not None:
                 native_cost = quantity * _decimal(snap["avg_cost_minor"])
             else:
-                native_cost = None
+                carried = self._carried_avg_cost(int(account["id"]), snap, trades)
+                if carried is None:
+                    native_cost = None
+                else:
+                    native_cost = quantity * carried[0]
+                    # Convert at the date the basis was reported, so carrying it
+                    # forward does not restate the reporting-currency cost.
+                    cost_date = carried[1]
             reporting_cost = (
-                self._reporting_value(native_cost, currency, anchor_date)
+                self._reporting_value(native_cost, currency, cost_date)
                 if native_cost is not None
                 else None
             )
@@ -153,7 +208,7 @@ class BrokerageHoldingsMixin:
                 ),
             )
 
-        for trade in self.trades(account["id"], as_of):
+        for trade in trades:
             security_id = int(trade["security_id"])
             currency = canonical_currency(trade["currency"])
             security_currency = canonical_currency(trade["security_currency"])
