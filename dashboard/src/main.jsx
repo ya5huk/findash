@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import {
   DividendMonthlyChart,
   ExpenseCategoryChart,
+  HoldingValueChart,
   MonthlyFlowChart,
   InteractiveLineChart,
 } from './charts'
@@ -134,7 +136,7 @@ function visibleOverviewBuckets(data) {
     .filter((bucket) => bucket.accounts.length)
 }
 
-function MiniPriceChart({ values = [], tone = 'neutral', ticker, phase = 'regular' }) {
+function MiniPriceChart({ values = [], tone = 'neutral', ticker, previousSession = false }) {
   const finite = values.map(Number).filter(Number.isFinite)
   if (!finite.length) return <span className="market-spark-empty">No session history</span>
   const width = 128
@@ -148,18 +150,13 @@ function MiniPriceChart({ values = [], tone = 'neutral', ticker, phase = 'regula
     const y = height - 4 - ((value - min) / spread) * (height - 8)
     return `${x.toFixed(1)},${y.toFixed(1)}`
   }).join(' ')
-  const sessionLabel = phase === 'pre'
-    ? 'pre-market'
-    : phase === 'previous'
-      ? 'previous session'
-      : 'current session'
 
   return (
     <svg
-      className={`market-spark market-spark-${tone}${phase === 'pre' ? ' market-spark-pre' : ''}`}
+      className={`market-spark market-spark-${tone}`}
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${ticker} ${sessionLabel} price history`}
+      aria-label={`${ticker} ${previousSession ? 'previous' : 'current'} session price history`}
       preserveAspectRatio="none"
     >
       <line x1="0" x2={width} y1={height / 2} y2={height / 2} />
@@ -643,18 +640,134 @@ function ForexView({ data }) {
   )
 }
 
+function dayLabel(value) {
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return Number.isNaN(parsed.valueOf())
+    ? value
+    : new Intl.DateTimeFormat('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      }).format(parsed)
+}
+
+function HoldingHistoryModal({ position, history, dates, asOf, onClose }) {
+  const closeButton = useRef(null)
+  const currency = history?.currency || position.currency
+  const current = history?.currency === position.currency
+    ? Number(position.market_native)
+    : null
+  const series = useMemo(() => {
+    const raw = (history?.values || []).map((value) => (value == null ? null : Number(value)))
+    const first = raw.findIndex((value) => value > 0)
+    if (first < 0) return { dates: [], values: [] }
+    const values = raw.slice(first)
+    const labels = dates.slice(first)
+    // Today's daily-close point is replaced by the live quote shown on the box.
+    if (labels.at(-1) === asOf && Number.isFinite(current)) {
+      values[values.length - 1] = current
+    }
+    return { dates: labels, values }
+  }, [asOf, current, dates, history])
+  const now = Number.isFinite(current) ? current : series.values.at(-1)
+  const peak = series.values.reduce(
+    (best, value, index) => (
+      Number.isFinite(value) && (best == null || value > best.value)
+        ? { value, date: series.dates[index] }
+        : best
+    ),
+    null,
+  )
+
+  useEffect(() => {
+    const previousFocus = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButton.current?.focus()
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      previousFocus?.focus?.()
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="holding-modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <section
+        className="holding-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="holding-modal-title"
+      >
+        <header className="holding-modal-heading">
+          <div>
+            <h3 id="holding-modal-title">{position.ticker}</h3>
+            <p>Position value over time · {currency}</p>
+          </div>
+          <button
+            ref={closeButton}
+            type="button"
+            className="holding-modal-close"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <dl className="holding-modal-stats">
+          <div>
+            <dt>Now</dt>
+            <dd>
+              {money(now, currency, 0)}
+              {series.dates.length > 0 && <small>held since {dayLabel(series.dates[0])}</small>}
+            </dd>
+          </div>
+          <div>
+            <dt>Peak</dt>
+            <dd>
+              {peak ? money(peak.value, currency, 0) : '—'}
+              {peak && <small>{dayLabel(peak.date)}</small>}
+            </dd>
+          </div>
+          <div>
+            <dt>Peak vs now</dt>
+            <dd>{peak && now ? signedPercent((peak.value / now - 1) * 100, 1) : '—'}</dd>
+          </div>
+        </dl>
+        <HoldingValueChart
+          dates={series.dates}
+          values={series.values}
+          current={now}
+          currency={currency}
+          ticker={position.ticker}
+        />
+        <p className="holding-modal-note">
+          Shaded: days the position was worth more than today. Value includes shares
+          bought or sold since, so compare it with your trades.
+        </p>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
 function Markets({ data }) {
   const benchmark = data.charts.stocksVsSpy
   const [selectedKey, setSelectedKey] = useState(null)
   const selectedPosition = data.positions.find(
     (position) => `${position.account_id}-${position.security_id}` === selectedKey,
   )
-  const selectedValues = selectedPosition
-    ? (benchmark.holdings || {})[selectedPosition.ticker]
-    : null
-  const toggleSelected = (key) => {
-    setSelectedKey((current) => (current === key ? null : key))
-  }
+  const closeModal = useCallback(() => setSelectedKey(null), [])
   return (
     <>
       {data.positions.length ? (
@@ -676,29 +789,40 @@ function Markets({ data }) {
               style={{ '--market-trend-alpha': trend.alpha }}
               tabIndex={0}
               role="button"
-              aria-pressed={selected}
-              onClick={() => toggleSelected(key)}
+              aria-haspopup="dialog"
+              aria-label={`${position.ticker}: show position value over time`}
+              onClick={() => setSelectedKey(key)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
-                  toggleSelected(key)
+                  setSelectedKey(key)
                 }
               }}
             >
               <div className="market-position-main">
                 <div className="market-identity">
-                  <strong>
-                    {position.ticker}
-                    {phase === 'pre' && <em className="market-session-badge">pre-market</em>}
-                  </strong>
+                  <strong>{position.ticker}</strong>
                   <small>{number(position.quantity, 6)} × {money(position.last_price, position.currency, 2)}</small>
                 </div>
-                <MiniPriceChart
-                  ticker={position.ticker}
-                  values={position.session_prices || []}
-                  tone={tone}
-                  phase={phase}
-                />
+                {phase === 'pre' ? (
+                  <svg
+                    className="market-spark-premarket"
+                    viewBox="0 0 24 24"
+                    role="img"
+                    aria-label={`${position.ticker} pre-market; session chart opens with the market`}
+                  >
+                    <title>Pre-market</title>
+                    <path d="M7 16a5 5 0 0 1 10 0" />
+                    <path d="M12 5v3M5.2 8.7l2.1 2.1M18.8 8.7l-2.1 2.1M3 19h18" />
+                  </svg>
+                ) : (
+                  <MiniPriceChart
+                    ticker={position.ticker}
+                    values={position.session_prices || []}
+                    tone={tone}
+                    previousSession={phase === 'previous'}
+                  />
+                )}
                 <div className="market-value">
                   <strong>{money(position.market_usd, 'USD', 0)}</strong>
                   <small className={tone === 'neutral' ? 'muted' : tone}>
@@ -744,17 +868,19 @@ function Markets({ data }) {
         ariaLabel="Portfolio, benchmark, and net funding history"
         series={[
           { label: 'Portfolio', values: benchmark.stocks, tone: 'ink' },
-          ...(selectedValues
-            ? [{
-                label: selectedPosition.ticker,
-                values: selectedValues,
-                tone: 'ribbon',
-              }]
-            : []),
           { label: 'S&P 500', values: benchmark.spy, tone: 'muted', dashed: true },
           { label: 'Net funding', values: benchmark.cumulativeDeposits, tone: 'gold' },
         ]}
       />
+      {selectedPosition && (
+        <HoldingHistoryModal
+          position={selectedPosition}
+          history={(benchmark.holdings || {})[selectedPosition.ticker]}
+          dates={benchmark.dates}
+          asOf={data.as_of}
+          onClose={closeModal}
+        />
+      )}
       <DividendView data={data} />
       <ForexView data={data} />
     </>

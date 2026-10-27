@@ -31,7 +31,12 @@ plugin manifest (`.claude-plugin/plugin.json`).
   and stores each session's boundaries so the dashboard sparklines distinguish a
   pre-market series from a regular one and stay complete even when the dashboard
   was just opened. The dashboard server runs the light refresh every 5 minutes
-  between full 30-minute refreshes.
+  between full 30-minute refreshes. Before the regular session opens, a holding
+  shows a single pre-market icon instead of a partial chart.
+- **Holding value history.** Clicking a holding on the Markets tab opens a modal with
+  that position's value across every day it was held, in the security's own
+  currency: the peak, its distance from today, and shading wherever the position
+  was worth more than it is now.
 
 ### Fixed
 - **Cost basis survives a snapshot without average cost.** When the latest position

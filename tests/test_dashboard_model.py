@@ -272,7 +272,10 @@ class DashboardModelTest(unittest.TestCase):
         self.assertEqual(chart["stocks"], [1000.0] * 7 + [1100.0])
         self.assertEqual(chart["spy"], [1000.0] * 7 + [1100.0])
         self.assertEqual(chart["cumulativeDeposits"], [0.0] * 7 + [100.0])
-        self.assertEqual(chart["holdings"], {"HELD": [1000.0] * 8})
+        self.assertEqual(
+            chart["holdings"],
+            {"HELD": {"currency": "ILS", "values": [1000.0] * 8}},
+        )
 
     def test_benchmark_excludes_liquid_study_fund_from_brokerage_value(self):
         con = sqlite3.connect(":memory:")
@@ -503,6 +506,9 @@ class DashboardModelTest(unittest.TestCase):
             chart["cumulativeDeposits"], [0.0] + [400.0] * 7
         )
         self.assertEqual(chart["currency"], "ILS")
+        # A holding's own history stays in its security currency, not ILS.
+        self.assertEqual(chart["holdings"]["HELD"]["currency"], "USD")
+        self.assertEqual(chart["holdings"]["HELD"]["values"][-1], 100.0)
         cash = next(
             row for row in model["state"].rows if row.item_key == "cash_usd"
         )

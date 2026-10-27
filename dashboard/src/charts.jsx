@@ -352,6 +352,104 @@ export function InteractiveLineChart({
   )
 }
 
+function signedPercent(value) {
+  if (!Number.isFinite(value)) return '—'
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`
+}
+
+export function HoldingValueChart({
+  dates = [],
+  values = [],
+  current,
+  currency = 'USD',
+  ticker,
+}) {
+  const canvas = useRef(null)
+  const [range, setRange] = useState('all')
+  const start = useMemo(() => rangeStart(dates, range), [dates, range])
+  const visibleDates = useMemo(() => dates.slice(start), [dates, start])
+  const visibleValues = useMemo(() => values.slice(start), [values, start])
+  const peakIndex = useMemo(() => {
+    let best = -1
+    visibleValues.forEach((value, index) => {
+      if (Number.isFinite(value) && (best < 0 || value > visibleValues[best])) best = index
+    })
+    return best
+  }, [visibleValues])
+
+  useEffect(() => {
+    if (!canvas.current || !visibleDates.length || !Number.isFinite(current)) return undefined
+    const options = sharedOptions(currency)
+    options.plugins.legend.display = false
+    options.plugins.tooltip.filter = (item) => item.datasetIndex === 0
+    options.plugins.tooltip.callbacks = {
+      title: (items) => fullDate(items[0]?.label || ''),
+      label: (context) => money(context.parsed.y, currency),
+      footer: (items) => {
+        const value = items[0]?.parsed.y
+        return current ? `${signedPercent((value / current - 1) * 100)} vs now` : ''
+      },
+    }
+    const chart = new Chart(canvas.current, {
+      type: 'line',
+      data: {
+        labels: visibleDates,
+        datasets: [
+          {
+            label: `${ticker} value`,
+            data: visibleValues,
+            borderColor: PALETTE.ink,
+            borderWidth: 1.8,
+            // Shade only the stretches worth more than today.
+            fill: { target: { value: current }, above: 'rgba(168, 146, 77, 0.24)', below: 'transparent' },
+            spanGaps: false,
+            pointRadius: (context) => (context.dataIndex === peakIndex ? 4 : 0),
+            pointBackgroundColor: PALETTE.ribbon,
+            pointBorderColor: PALETTE.parchment,
+            pointBorderWidth: 1.5,
+          },
+          {
+            label: 'Now',
+            data: visibleDates.map(() => current),
+            borderColor: PALETTE.gold,
+            borderDash: [5, 5],
+            borderWidth: 1.2,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            fill: false,
+          },
+        ],
+      },
+      options,
+      plugins: [hoverGuide],
+    })
+    return () => chart.destroy()
+  }, [current, currency, peakIndex, ticker, visibleDates, visibleValues])
+
+  if (!visibleDates.length || !Number.isFinite(current)) {
+    return <p className="empty">No value history for this holding yet.</p>
+  }
+  return (
+    <div className="interactive-chart holding-value-chart">
+      <div className="chart-ranges" aria-label="Holding chart date range">
+        {RANGE_OPTIONS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={range === value}
+            onClick={() => setRange(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="chart-stage">
+        <canvas ref={canvas} role="img" aria-label={`${ticker} position value over time compared with today`} />
+      </div>
+    </div>
+  )
+}
+
 export function ExpenseCategoryChart({ categories = [], currency = 'ILS' }) {
   const canvas = useRef(null)
   const total = categories.reduce((sum, row) => sum + row.total, 0)

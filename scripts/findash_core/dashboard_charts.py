@@ -247,9 +247,10 @@ class DashboardChartsMixin:
             "holdings": {},
             "currency": self.reporting_currency,
         }
-        # Per-ticker market value of the held position, so the UI can overlay a
-        # selected holding onto the portfolio/funding lines in the same unit.
+        # Per-ticker market value of the held position in the security's own
+        # currency, so a holding's history is not distorted by FX moves.
         holding_values: dict[str, list] = {}
+        holding_currencies: dict[str, str] = {}
         seed_date: Optional[str] = None
         opening_spy_shares = ZERO
         for point in dates:
@@ -280,10 +281,11 @@ class DashboardChartsMixin:
             if state is not None:
                 for row in investment_rows:
                     if row.item_type == "security" and row.ticker:
-                        per_ticker[row.ticker] += row.reporting_value_minor
+                        per_ticker[row.ticker] += row.native_value_minor
+                        holding_currencies[row.ticker] = row.currency
             for ticker, value in per_ticker.items():
                 series = holding_values.setdefault(ticker, [None] * point_index)
-                series.append(_major(value, self.reporting_currency))
+                series.append(_major(value, holding_currencies[ticker]))
             for ticker, series in holding_values.items():
                 if len(series) <= point_index:
                     series.append(None)
@@ -373,7 +375,7 @@ class DashboardChartsMixin:
         # Only currently-held tickers are selectable in the UI; sold-out
         # histories would bloat the payload without a box to click.
         result["holdings"] = {
-            ticker: series
+            ticker: {"currency": holding_currencies[ticker], "values": series}
             for ticker, series in holding_values.items()
             if series and series[-1]
         }
