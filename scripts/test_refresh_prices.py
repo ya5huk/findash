@@ -99,6 +99,99 @@ class RefreshSecurityTests(unittest.TestCase):
         self.assertIsNone(row)
 
 
+class RefreshIntradayTests(unittest.TestCase):
+    def setUp(self):
+        self.con = sqlite3.connect(":memory:")
+        self.addCleanup(self.con.close)
+        self.con.executescript(SCHEMA)
+        self.cur = self.con.cursor()
+        self.cur.execute(
+            """INSERT INTO securities(ticker,name,asset_class,currency)
+               VALUES('TEST','Test','stock','USD')"""
+        )
+
+    def _refresh(self, points, periods, yahoo_currency="USD"):
+        with patch.object(
+            refresh_prices,
+            "fetch_yahoo_intraday",
+            return_value=(points, yahoo_currency, periods),
+        ):
+            return refresh_prices.refresh_security_intraday(
+                self.cur, 1, "TEST", "USD"
+            )
+
+    def test_session_points_are_backfilled_at_provider_timestamps(self):
+        result = self._refresh(
+            [(1_775_050_200, 100.5), (1_775_050_500, 101.0)],
+            {
+                "pre": {"start": 1_775_030_400, "end": 1_775_050_200},
+                "regular": {"start": 1_775_050_200, "end": 1_775_073_600},
+                "post": {"start": 1_775_073_600, "end": 1_775_088_000},
+            },
+        )
+
+        self.assertEqual(result, (2, True))
+        rows = self.cur.execute(
+            """SELECT observed_at,price_minor,currency,source
+                 FROM security_price_observations ORDER BY observed_at"""
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][1], 10050)
+        self.assertEqual(rows[0][2], "USD")
+        self.assertEqual(rows[0][3], "yahoo-intraday")
+
+    def test_refetching_the_same_session_is_idempotent(self):
+        periods = {
+            "regular": {"start": 1_775_050_200, "end": 1_775_073_600},
+        }
+        first = self._refresh([(1_775_050_200, 100.5)], periods)
+        second = self._refresh([(1_775_050_200, 100.5)], periods)
+
+        self.assertEqual(first, (1, True))
+        self.assertEqual(second, (0, True))
+        self.assertEqual(
+            self.cur.execute(
+                "SELECT COUNT(*) FROM security_price_observations"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_session_bounds_are_stored_in_meta(self):
+        self._refresh(
+            [(1_775_050_200, 100.5)],
+            {
+                "pre": {"start": 1_775_030_400, "end": 1_775_050_200},
+                "regular": {"start": 1_775_050_200, "end": 1_775_073_600},
+                "post": {"start": 1_775_073_600, "end": 1_775_088_000},
+            },
+        )
+        stored = self.cur.execute(
+            "SELECT value FROM meta WHERE key='market_session:1'"
+        ).fetchone()
+        self.assertIsNotNone(stored)
+        import json as json_module
+
+        bounds = json_module.loads(stored[0])
+        self.assertEqual(bounds["regular_start"][:10], bounds["date"])
+        self.assertLess(bounds["pre_start"], bounds["regular_start"])
+        self.assertLess(bounds["regular_end"], bounds["post_end"])
+
+    def test_failed_fetch_writes_nothing(self):
+        with patch.object(
+            refresh_prices, "fetch_yahoo_intraday", return_value=None
+        ):
+            result = refresh_prices.refresh_security_intraday(
+                self.cur, 1, "TEST", "USD"
+            )
+        self.assertEqual(result, (0, False))
+        self.assertEqual(
+            self.cur.execute(
+                "SELECT COUNT(*) FROM security_price_observations"
+            ).fetchone()[0],
+            0,
+        )
+
+
 class YahooFetchTests(unittest.TestCase):
     def test_empty_provider_result_is_a_nonfatal_fetch_failure(self):
         response = MagicMock()

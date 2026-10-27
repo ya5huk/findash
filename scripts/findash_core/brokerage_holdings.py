@@ -205,7 +205,11 @@ class BrokerageHoldingsMixin:
         return [holding for holding in holdings.values() if holding.quantity != ZERO]
 
     def security_quantities_at(
-        self, as_of: str, *, include_closed: bool = False
+        self,
+        as_of: str,
+        *,
+        include_closed: bool = False,
+        account_id: Optional[int] = None,
     ) -> dict[int, Decimal]:
         """Return held quantities without requiring prices or FX rates.
 
@@ -223,7 +227,9 @@ class BrokerageHoldingsMixin:
         date.fromisoformat(as_of)
         totals: dict[int, Decimal] = {}
         for account in self.accounts(as_of, include_closed=include_closed):
-            if account["kind"] != "brokerage":
+            if account["kind"] != "brokerage" or (
+                account_id is not None and int(account["id"]) != account_id
+            ):
                 continue
             snapshots = self._position_snapshots(int(account["id"]), as_of)
             complete_date = self._latest_complete_account_snapshot_date(

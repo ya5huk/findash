@@ -11,6 +11,7 @@ through ``str`` so their binary representation does not leak into rounding.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -63,6 +64,7 @@ def _decimal(value: Number, *, name: str) -> Decimal:
     return result
 
 
+@lru_cache(maxsize=None)
 def canonical_currency(code: str) -> str:
     """Return the ISO currency represented by ``code``.
 

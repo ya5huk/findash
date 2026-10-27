@@ -55,14 +55,6 @@ const CATEGORY_COLORS = [
   '#5c6b50',
 ]
 
-const FOREX_COLORS = [
-  PALETTE.ink,
-  PALETTE.ribbon,
-  PALETTE.positive,
-  PALETTE.gold,
-  PALETTE.mutedInk,
-]
-
 const RANGE_OPTIONS = [
   ['3m', '3M'],
   ['ytd', 'YTD'],
@@ -132,22 +124,6 @@ function rangeStart(labels, range) {
     return date && date >= cutoff
   })
   return index < 0 ? 0 : index
-}
-
-function rangeCutoff(latest, range) {
-  if (!latest || range === 'all') return Number.NEGATIVE_INFINITY
-  const cutoff = new Date(latest)
-  if (range === '3m') cutoff.setUTCMonth(cutoff.getUTCMonth() - 3)
-  if (range === '1y') cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 1)
-  if (range === 'ytd') cutoff.setUTCMonth(0, 1)
-  return cutoff.valueOf()
-}
-
-function timestampLabel(value, full = false) {
-  const parsed = new Date(Number(value))
-  if (Number.isNaN(parsed.valueOf())) return String(value)
-  const iso = parsed.toISOString().slice(0, 10)
-  return full ? fullDate(iso) : shortDate(iso)
 }
 
 function lineBackground(context) {
@@ -376,203 +352,6 @@ export function InteractiveLineChart({
   )
 }
 
-export function ForexActivityChart({
-  chart = {},
-  activity = [],
-  reportingCurrency = 'ILS',
-}) {
-  const canvas = useRef(null)
-  const [range, setRange] = useState('1y')
-  const dates = chart.dates || []
-  const rateSeries = useMemo(() => {
-    const supplied = chart.series?.length
-      ? chart.series
-      : [
-          { currency: 'USD', values: chart.usd || [] },
-          { currency: 'GBP', values: chart.gbp || [] },
-        ]
-    return supplied.map((series) => ({
-      currency: series.currency,
-      points: dates.flatMap((date, index) => {
-        const parsed = parsedDate(date)
-        const rawRate = series.values?.[index]
-        if (rawRate == null || rawRate === '') return []
-        const rate = Number(rawRate)
-        return parsed && Number.isFinite(rate)
-          ? [{ x: parsed.valueOf(), y: rate, date }]
-          : []
-      }),
-    })).filter((series) => series.points.length)
-  }, [chart.gbp, chart.series, chart.usd, dates])
-  const activityPoints = useMemo(() => activity.flatMap((event) => {
-    const parsed = parsedDate(event.date)
-    if (event.rate == null || event.rate === '') return []
-    const rate = Number(event.rate)
-    return parsed && Number.isFinite(rate)
-      ? [{ ...event, timestamp: parsed.valueOf(), rate }]
-      : []
-  }), [activity])
-  const latest = Math.max(
-    ...rateSeries.flatMap((series) => series.points.map((point) => point.x)),
-    ...activityPoints.map((event) => event.timestamp),
-    Number.NEGATIVE_INFINITY,
-  )
-  const cutoff = rangeCutoff(
-    Number.isFinite(latest) ? latest : null,
-    range,
-  )
-  const visibleRates = useMemo(() => rateSeries.map((series) => ({
-    ...series,
-    points: series.points.filter((point) => point.x >= cutoff),
-  })), [cutoff, rateSeries])
-  const visibleFunding = useMemo(
-    () => activityPoints.filter((event) => event.timestamp >= cutoff),
-    [activityPoints, cutoff],
-  )
-  const hasValues = rateSeries.length > 0 || activityPoints.length > 0
-
-  useEffect(() => {
-    if (!canvas.current || !hasValues) return undefined
-    const options = sharedOptions(reportingCurrency)
-    options.interaction = { mode: 'nearest', intersect: false, axis: 'x' }
-    options.plugins.legend.labels = {
-      ...options.plugins.legend.labels,
-      filter: (item, data) => !data.datasets[item.datasetIndex]?.isFunding,
-    }
-    options.plugins.tooltip.displayColors = false
-    options.plugins.tooltip.callbacks = {
-      title: (items) => timestampLabel(items[0]?.parsed.x, true),
-      label: (context) => {
-        const event = context.raw?.funding
-        if (!event) {
-          return `${context.dataset.label}: ${Number(context.parsed.y).toFixed(4)}`
-        }
-        const kind = event.kind === 'currency_purchase'
-          ? 'Currency purchase'
-          : event.kind === 'brokerage_withdrawal'
-            ? 'Brokerage withdrawal'
-            : 'Brokerage funding'
-        return [
-          event.amount == null || !event.currency
-            ? `${kind} · amount unavailable`
-            : `${kind} ${money(event.amount, event.currency, 2)}`,
-          event.reporting_amount == null
-            ? `${reportingCurrency} equivalent unavailable`
-            : `${reportingCurrency} equivalent ${money(event.reporting_amount, reportingCurrency, 2)}`,
-          `${event.rate_is_actual ? 'Actual' : 'Reference'} rate ${Number(event.rate).toFixed(4)}`,
-        ]
-      },
-    }
-    options.scales.x = {
-      type: 'linear',
-      grid: { display: false },
-      border: { display: false },
-      ticks: {
-        autoSkip: true,
-        autoSkipPadding: 24,
-        color: PALETTE.mutedInk,
-        maxRotation: 0,
-        padding: 10,
-        font: { family: "'EB Garamond', Georgia, serif", size: 12 },
-        callback: (value) => timestampLabel(value),
-      },
-    }
-    options.scales.y = {
-      grid: { color: PALETTE.hairline, drawTicks: false },
-      border: { display: false },
-      ticks: {
-        color: PALETTE.mutedInk,
-        maxTicksLimit: 6,
-        padding: 10,
-        font: { family: "'EB Garamond', Georgia, serif", size: 12 },
-        callback: (value) => Number(value).toFixed(2),
-      },
-    }
-
-    const colorByCurrency = new Map(
-      rateSeries.map((series, index) => [
-        series.currency,
-        FOREX_COLORS[index % FOREX_COLORS.length],
-      ]),
-    )
-    const lineDatasets = visibleRates.map((series, index) => ({
-      label: `${series.currency} → ${reportingCurrency}`,
-      data: series.points,
-      parsing: false,
-      borderColor: colorByCurrency.get(series.currency),
-      backgroundColor: 'transparent',
-      borderDash: index ? [7, 6] : undefined,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      spanGaps: true,
-    }))
-    const activityCurrencies = [...new Set(
-      visibleFunding.map((event) => event.currency).filter(Boolean),
-    )]
-    const markerDatasets = activityCurrencies.map((currency, index) => ({
-      label: `${currency} activity`,
-      isFunding: true,
-      data: visibleFunding
-        .filter((event) => event.currency === currency)
-        .map((event) => ({
-          x: event.timestamp,
-          y: event.rate,
-          funding: event,
-        })),
-      parsing: false,
-      showLine: false,
-      pointRadius: 5,
-      pointHoverRadius: 7,
-      pointHitRadius: 14,
-      pointBackgroundColor: colorByCurrency.get(currency)
-        || FOREX_COLORS[(rateSeries.length + index) % FOREX_COLORS.length],
-      pointBorderColor: PALETTE.parchment,
-      pointBorderWidth: 2,
-    }))
-
-    const instance = new Chart(canvas.current, {
-      type: 'line',
-      data: { datasets: [...lineDatasets, ...markerDatasets] },
-      options,
-      plugins: [hoverGuide],
-    })
-    return () => instance.destroy()
-  }, [
-    hasValues,
-    rateSeries,
-    reportingCurrency,
-    visibleFunding,
-    visibleRates,
-  ])
-
-  if (!hasValues) {
-    return <p className="empty">No FX rate or activity history is available yet.</p>
-  }
-  return (
-    <div className="interactive-chart forex-chart">
-      <div className="chart-ranges" aria-label="Forex chart date range">
-        {RANGE_OPTIONS.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={range === value}
-            onClick={() => setRange(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="chart-stage">
-        <canvas
-          ref={canvas}
-          role="img"
-          aria-label="Foreign exchange rates with funding and currency-purchase points"
-        />
-      </div>
-    </div>
-  )
-}
-
 export function ExpenseCategoryChart({ categories = [], currency = 'ILS' }) {
   const canvas = useRef(null)
   const total = categories.reduce((sum, row) => sum + row.total, 0)
@@ -665,53 +444,329 @@ export function ExpenseCategoryChart({ categories = [], currency = 'ILS' }) {
   )
 }
 
-export function ExpenseMonthlyChart({ months = [], currency = 'ILS' }) {
+// Earlier months hold too little data to be meaningful.
+const MONTHLY_FLOW_START = '2024-06'
+
+function niceStep(raw) {
+  const magnitude = 10 ** Math.floor(Math.log10(raw))
+  const fraction = raw / magnitude
+  const nice = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10
+  return nice * magnitude
+}
+
+const INCOME_PARTS = [
+  ['salary', 'Salary'],
+  ['dividends', 'Dividends'],
+  ['refunds', 'Refunds'],
+  ['other', 'Other income'],
+]
+
+const NET_ROW_PILL_PADDING = 4
+// y-axis gutter plus right padding; a slight overestimate only adds a spare line.
+const NET_ROW_GUTTER = 70
+const NET_ROW_MAX_LINES = 6
+
+function netRowFont(size) {
+  return `600 ${size}px 'EB Garamond', Georgia, serif`
+}
+
+function signedMoney(value, currency) {
+  return new Intl.NumberFormat('en-IL', {
+    style: 'currency',
+    currency,
+    currencyDisplay: currency === 'USD' ? 'narrowSymbol' : 'symbol',
+    maximumFractionDigits: 0,
+    signDisplay: 'exceptZero',
+  }).format(value)
+}
+
+function compactSignedMoney(value, currency) {
+  return new Intl.NumberFormat('en-IL', {
+    style: 'currency',
+    currency,
+    currencyDisplay: currency === 'USD' ? 'narrowSymbol' : 'symbol',
+    notation: 'compact',
+    // Below a thousand, compact notation would otherwise print agorot.
+    maximumFractionDigits: Math.abs(value) < 1000 ? 0 : 1,
+    signDisplay: 'exceptZero',
+  }).format(value)
+}
+
+// Tried in order: the first that fits within three staggered lines wins.
+const NET_ROW_STYLES = [
+  { format: signedMoney, fontSize: 12 },
+  { format: signedMoney, fontSize: 11 },
+  { format: compactSignedMoney, fontSize: 12 },
+  { format: compactSignedMoney, fontSize: 11 },
+  { format: compactSignedMoney, fontSize: 10 },
+  { format: compactSignedMoney, fontSize: 9 },
+]
+
+export function MonthlyFlowChart({ months = [], currency = 'ILS' }) {
   const canvas = useRef(null)
+  const [showNetRows, setShowNetRows] = useState(false)
+  const visible = useMemo(
+    () => months.filter((row) => row.month >= MONTHLY_FLOW_START),
+    [months],
+  )
 
   useEffect(() => {
-    if (!canvas.current || !months.length) return undefined
+    if (!canvas.current || !visible.length) return undefined
+    const incomes = visible.map((row) => row.income?.total || 0)
+    const expenses = visible.map((row) => row.total || 0)
+    // One symmetric scale keeps the zero line centred and bar heights comparable.
+    const peak = Math.max(...incomes, ...expenses, 1)
+    const step = niceStep(peak / 3)
+    const extent = Math.ceil((peak * 1.04) / step) * step
+
     const options = sharedOptions(currency)
-    options.plugins.legend.display = false
+    options.interaction = { mode: 'nearest', intersect: true }
+    // The net rows occupy the space under the month labels, so the legend sits on top.
+    options.plugins.legend.position = 'top'
+    options.plugins.legend.labels = {
+      ...options.plugins.legend.labels,
+      boxWidth: 10,
+      boxHeight: 10,
+    }
+    options.plugins.tooltip.footerFont = {
+      family: "'EB Garamond', Georgia, serif",
+      size: 13,
+      weight: '600',
+    }
     options.plugins.tooltip.callbacks = {
       title: (items) => fullDate(items[0]?.label || ''),
       label: () => '',
       afterBody: (items) => {
-        const row = months[items[0]?.dataIndex]
-        return (row?.top || []).map(
+        const item = items[0]
+        const row = visible[item?.dataIndex]
+        if (!row) return []
+        if (item.datasetIndex === 0) {
+          return INCOME_PARTS
+            .filter(([key]) => (row.income?.[key] || 0) !== 0)
+            .map(([key, label]) => `${label}: ${money(row.income[key], currency)}`)
+        }
+        return (row.top || []).map(
           ([category, amount]) => `${category}: ${money(amount, currency)}`,
         )
       },
-      footer: (items) => `Total: ${money(items[0]?.parsed.y, currency)}`,
+      footer: (items) => {
+        const item = items[0]
+        const row = visible[item?.dataIndex]
+        if (!row) return ''
+        return item.datasetIndex === 0
+          ? `Money in: ${money(row.income?.total || 0, currency)}`
+          : `Money out: ${money(row.total || 0, currency)}`
+      },
     }
-    options.scales.y.beginAtZero = true
+    options.scales.x.stacked = true
+    options.scales.y = {
+      ...options.scales.y,
+      stacked: true,
+      min: -extent,
+      max: extent,
+      grid: {
+        drawTicks: false,
+        color: (context) => (context.tick.value === 0 ? PALETTE.ink : PALETTE.hairline),
+        lineWidth: (context) => (context.tick.value === 0 ? 1.25 : 1),
+      },
+      ticks: {
+        ...options.scales.y.ticks,
+        stepSize: step,
+        maxTicksLimit: 9,
+        callback: (value) => compactMoney(Math.abs(value), currency),
+      },
+    }
+
+    const bar = {
+      borderWidth: 0,
+      borderRadius: 1,
+      barPercentage: 0.74,
+      categoryPercentage: 0.82,
+    }
+    // Hovering anywhere in a month's column writes both totals beside their bars,
+    // rotated so the neighbouring columns never cover them.
+    const columnTotals = {
+      id: 'monthlyFlowColumnTotals',
+      afterEvent(chart, args) {
+        const { event } = args
+        const { chartArea } = chart
+        const inside = event.type !== 'mouseout'
+          && event.x >= chartArea.left && event.x <= chartArea.right
+          && event.y >= chartArea.top
+          && event.y <= (showNetRows ? chart.height : chartArea.bottom)
+        const index = inside
+          ? Math.min(Math.max(chart.scales.x.getValueForPixel(event.x), 0), visible.length - 1)
+          : null
+        if (index !== chart.$hoveredMonth) {
+          chart.$hoveredMonth = index
+          args.changed = true
+        }
+      },
+      afterDatasetsDraw(chart) {
+        const index = chart.$hoveredMonth
+        if (index == null) return
+        const { ctx, chartArea } = chart
+        const gap = 6
+        ctx.save()
+        ctx.font = "600 13px 'EB Garamond', Georgia, serif"
+        ctx.textBaseline = 'middle'
+        const label = (element, value, outward, color) => {
+          const text = money(value, currency)
+          const room = outward < 0 ? element.y - chartArea.top : chartArea.bottom - element.y
+          // A bar reaching the plot edge leaves no room outside, so write inside it.
+          const fits = room >= ctx.measureText(text).width + gap * 2
+          const direction = fits ? outward : -outward
+          ctx.save()
+          ctx.fillStyle = fits ? color : PALETTE.parchment
+          ctx.translate(element.x, element.y + direction * gap)
+          ctx.rotate(-Math.PI / 2)
+          ctx.textAlign = direction < 0 ? 'left' : 'right'
+          ctx.fillText(text, 0, 0)
+          ctx.restore()
+        }
+        label(chart.getDatasetMeta(0).data[index], incomes[index], -1, PALETTE.positive)
+        label(chart.getDatasetMeta(1).data[index], expenses[index], 1, PALETTE.ribbon)
+        ctx.restore()
+      },
+    }
+
+    // Two ledger rows under the month labels: each month's net, then the running
+    // total of those nets since the first visible month.
+    const nets = incomes.map((income, index) => income - expenses[index])
+    const runningTotals = nets.map(
+      (_, index) => nets.slice(0, index + 1).reduce((sum, value) => sum + value, 0),
+    )
+    const netRowSpecs = [
+      { label: 'Net', values: nets, tinted: true },
+      { label: 'Total', values: runningTotals, tinted: false },
+    ]
+    // Neighbouring months alternate across several lines, so each number may span
+    // that many columns. Wider charts use fewer lines and fuller amounts.
+    const allRowValues = [...nets, ...runningTotals]
+    const measure = canvas.current.getContext('2d')
+    measure.save()
+    const rowStyles = NET_ROW_STYLES.map((style) => {
+      measure.font = netRowFont(style.fontSize)
+      const widest = Math.max(
+        ...allRowValues.map((value) => measure.measureText(style.format(value, currency)).width),
+      )
+      return { ...style, span: widest + NET_ROW_PILL_PADDING * 2 + 6 }
+    })
+    measure.restore()
+    const rowLayout = (chartWidth) => {
+      const columnWidth = Math.max(1, (chartWidth - NET_ROW_GUTTER) / visible.length)
+      const linesFor = (style) => Math.ceil(style.span / columnWidth)
+      const style = rowStyles.find((candidate) => linesFor(candidate) <= 3)
+        || rowStyles.reduce((best, candidate) => (linesFor(candidate) < linesFor(best) ? candidate : best))
+      const lines = Math.min(Math.max(linesFor(style), 1), NET_ROW_MAX_LINES)
+      const lineHeight = style.fontSize + 8
+      return { ...style, lines, lineHeight, rowHeight: lines * lineHeight + 8 }
+    }
+    const rowsTopGap = 14
+    if (showNetRows) {
+      const basePadding = options.layout.padding
+      options.layout.padding = ({ chart }) => ({
+        ...basePadding,
+        bottom: rowsTopGap + rowLayout(chart.width).rowHeight * netRowSpecs.length,
+      })
+    }
+    const netRows = {
+      id: 'monthlyFlowNetRows',
+      afterDatasetsDraw(chart) {
+        const { ctx, chartArea, scales } = chart
+        const { format, fontSize, lines, lineHeight, rowHeight } = rowLayout(chart.width)
+        const rowsTop = chart.height - rowHeight * netRowSpecs.length
+        const pillHeight = fontSize + 6
+        ctx.save()
+        ctx.font = netRowFont(fontSize)
+        ctx.textBaseline = 'middle'
+        netRowSpecs.forEach(({ label, values, tinted }, rowIndex) => {
+          const top = rowsTop + rowIndex * rowHeight
+          ctx.strokeStyle = PALETTE.hairline
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(chartArea.left, top + 0.5)
+          ctx.lineTo(chartArea.right, top + 0.5)
+          ctx.stroke()
+          ctx.save()
+          ctx.font = "500 10px 'EB Garamond', Georgia, serif"
+          ctx.fillStyle = PALETTE.mutedInk
+          ctx.textAlign = 'right'
+          ctx.fillText(label.toUpperCase(), chartArea.left - 6, top + rowHeight / 2)
+          ctx.restore()
+          values.forEach((value, index) => {
+            const x = scales.x.getPixelForValue(index)
+            const line = index % lines
+            const y = top + 4 + lineHeight * line + lineHeight / 2
+            const text = format(value, currency)
+            const pillWidth = ctx.measureText(text).width + NET_ROW_PILL_PADDING * 2
+            if (line > 0) {
+              ctx.strokeStyle = PALETTE.hairline
+              ctx.beginPath()
+              ctx.moveTo(x + 0.5, top + 2)
+              ctx.lineTo(x + 0.5, y - pillHeight / 2)
+              ctx.stroke()
+            }
+            ctx.beginPath()
+            ctx.roundRect(x - pillWidth / 2, y - pillHeight / 2, pillWidth, pillHeight, 2)
+            if (tinted && value !== 0) {
+              ctx.fillStyle = value > 0 ? 'rgba(58, 90, 64, 0.16)' : 'rgba(139, 26, 26, 0.13)'
+              ctx.fill()
+            }
+            if (chart.$hoveredMonth === index) {
+              ctx.strokeStyle = PALETTE.ink
+              ctx.stroke()
+            }
+            ctx.fillStyle = PALETTE.ink
+            ctx.textAlign = 'center'
+            ctx.fillText(text, x, y)
+          })
+        })
+        ctx.restore()
+      },
+    }
 
     const chart = new Chart(canvas.current, {
       type: 'bar',
       data: {
-        labels: months.map((row) => row.month),
-        datasets: [{
-          data: months.map((row) => row.total),
-          backgroundColor: PALETTE.gold,
-          borderColor: PALETTE.ink,
-          borderWidth: 0.5,
-          borderRadius: 1,
-          barPercentage: 0.74,
-          categoryPercentage: 0.82,
-        }],
+        labels: visible.map((row) => row.month),
+        datasets: [
+          { ...bar, label: 'Money in', data: incomes, backgroundColor: PALETTE.positive },
+          {
+            ...bar,
+            label: 'Money out',
+            data: expenses.map((value) => -value),
+            backgroundColor: PALETTE.ribbon,
+          },
+        ],
       },
       options,
+      plugins: showNetRows ? [columnTotals, netRows] : [columnTotals],
     })
     return () => chart.destroy()
-  }, [currency, months])
+  }, [currency, visible, showNetRows])
 
-  if (!months.length) {
-    return <p className="empty">No monthly consumer-expense history yet.</p>
+  if (!visible.length) {
+    return <p className="empty">No monthly cash-flow history yet.</p>
   }
 
   return (
-    <div className="interactive-chart expense-monthly-chart">
+    <div className={`interactive-chart expense-monthly-chart${showNetRows ? ' with-net-rows' : ''}`}>
+      <label className="flow-net-toggle">
+        <input
+          type="checkbox"
+          role="switch"
+          checked={showNetRows}
+          onChange={(event) => setShowNetRows(event.target.checked)}
+        />
+        <span>Monthly net &amp; running total</span>
+      </label>
       <div className="chart-stage">
-        <canvas ref={canvas} role="img" aria-label="Monthly expense totals for all time" />
+        <canvas
+          ref={canvas}
+          role="img"
+          aria-label="Monthly money in above and money out below the timeline"
+        />
       </div>
     </div>
   )

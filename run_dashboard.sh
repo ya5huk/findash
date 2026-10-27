@@ -36,6 +36,6 @@ python3 scripts/dashboard_server.py --port "$API_PORT" &
 API_PID=$!
 
 echo "FinDash live dashboard: http://127.0.0.1:$UI_PORT"
-echo "Market data refresh: every 30 minutes while this command runs"
+echo "Market data refresh: intraday quotes every 5 minutes, full refresh every 30 minutes"
 FINDASH_DASHBOARD_API_PORT="$API_PORT" \
   npm --prefix dashboard run dev -- --host 127.0.0.1 --port "$UI_PORT"

@@ -35,10 +35,23 @@ def _utc_now() -> str:
 
 
 class MarketRefreshService:
-    def __init__(self, interval_seconds: int = 1800, *, initial: bool = True):
+    """Full refresh (daily closes, dividends, FX) every ``interval_seconds``;
+    a light intraday session fetch between full runs keeps the sparklines and
+    quotes current."""
+
+    def __init__(
+        self,
+        interval_seconds: int = 1800,
+        *,
+        initial: bool = True,
+        intraday_seconds: int = 300,
+    ):
         if interval_seconds < 60:
             raise ValueError("refresh interval must be at least 60 seconds")
+        if intraday_seconds < 60:
+            raise ValueError("intraday interval must be at least 60 seconds")
         self.interval_seconds = interval_seconds
+        self.intraday_seconds = min(intraday_seconds, interval_seconds)
         self.initial = initial
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -50,6 +63,7 @@ class MarketRefreshService:
             "last_finished_at": None,
             "last_ok": None,
             "interval_seconds": interval_seconds,
+            "intraday_interval_seconds": self.intraday_seconds,
         }
 
     def start(self) -> None:
@@ -71,11 +85,12 @@ class MarketRefreshService:
         with self._lock:
             return dict(self._status)
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, full: bool = True) -> None:
+        arguments = ["--range", "1mo", "--intraday"] if full else ["--intraday-only"]
         with self._lock:
             self._status.update(running=True, last_started_at=_utc_now())
         result = subprocess.run(
-            [sys.executable, str(REFRESH_SCRIPT), "--range", "1mo"],
+            [sys.executable, str(REFRESH_SCRIPT), *arguments],
             cwd=ROOT,
             text=True,
             stdout=subprocess.DEVNULL,
@@ -94,9 +109,13 @@ class MarketRefreshService:
         if not self.initial:
             self._wake.wait(self.interval_seconds)
             self._wake.clear()
+        full_elapsed = self.interval_seconds
         while not self._stop.is_set():
+            full = full_elapsed >= self.interval_seconds
+            if full:
+                full_elapsed = 0
             try:
-                self._refresh()
+                self._refresh(full=full)
             except (OSError, subprocess.SubprocessError):
                 with self._lock:
                     self._status.update(
@@ -106,7 +125,11 @@ class MarketRefreshService:
                     )
             if self._stop.is_set():
                 return
-            self._wake.wait(self.interval_seconds)
+            if self._wake.wait(self.intraday_seconds):
+                # A manual refresh request restarts with a full run.
+                full_elapsed = self.interval_seconds
+            else:
+                full_elapsed += self.intraday_seconds
             self._wake.clear()
 
 
@@ -171,6 +194,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--refresh-seconds", type=int, default=1800)
+    parser.add_argument("--intraday-seconds", type=int, default=300)
     parser.add_argument("--no-initial-refresh", action="store_true")
     return parser.parse_args(argv)
 
@@ -187,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         connection = connect_db(DEFAULT_DB)
         connection.close()
         refresh = MarketRefreshService(
-            args.refresh_seconds, initial=not args.no_initial_refresh
+            args.refresh_seconds,
+            initial=not args.no_initial_refresh,
+            intraday_seconds=args.intraday_seconds,
         )
     except (OSError, ValueError, sqlite3.Error) as exc:
         print(f"Dashboard server could not start: {exc}", file=sys.stderr)

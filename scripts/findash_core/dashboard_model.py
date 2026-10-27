@@ -31,6 +31,7 @@ from findash_core.movement_classification import (
     is_internal_fx_transaction,
 )
 from findash_core.dashboard_charts import DashboardChartsMixin
+from findash_core.ledger.rates import conversion_cost
 
 
 def major(amount_minor: Decimal | int, currency: str) -> float:
@@ -341,15 +342,119 @@ class DashboardModelBuilder(DashboardChartsMixin):
             )
         return result
 
+    def _recorded_conversion_rows(
+        self, as_of: str
+    ) -> tuple[list[dict], set[int], set[int]]:
+        """Linked conversions: the user's rate beside that day's market rate."""
+
+        rows: list[dict] = []
+        event_ids: set[int] = set()
+        document_ids: set[int] = set()
+        if not self.con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fx_conversions'"
+        ).fetchone():
+            return rows, event_ids, document_ids
+        conversions = self.con.execute(
+            """SELECT conversion.*,
+                      sell.currency AS sell_currency,sell.amount_minor AS sell_amount,
+                      buy.currency AS buy_currency,buy.amount_minor AS buy_amount
+                 FROM fx_conversions AS conversion
+                 JOIN accounts AS account ON account.id=conversion.account_id
+                 JOIN canonical_events AS sell ON sell.id=conversion.sell_event_id
+                 JOIN canonical_events AS buy ON buy.id=conversion.buy_event_id
+                WHERE account.kind='brokerage' AND conversion.converted_on<=?
+                  AND sell.status='confirmed' AND buy.status='confirmed'
+                ORDER BY conversion.converted_on,conversion.id""",
+            (as_of,),
+        ).fetchall()
+        for conversion in conversions:
+            legs = (int(conversion["sell_event_id"]), int(conversion["buy_event_id"]))
+            event_ids.update(legs)
+            document_ids.update(
+                int(row[0])
+                for row in self.con.execute(
+                    """SELECT DISTINCT source.source_doc_id
+                         FROM event_evidence AS evidence
+                         JOIN source_events AS source
+                           ON source.id=evidence.source_event_id
+                        WHERE evidence.canonical_event_id IN (?,?)
+                          AND source.source_doc_id IS NOT NULL""",
+                    legs,
+                )
+            )
+            sell_currency = canonical_currency(conversion["sell_currency"])
+            buy_currency = canonical_currency(conversion["buy_currency"])
+            bought_foreign = buy_currency != self.reporting_currency
+            currency = buy_currency if bought_foreign else sell_currency
+            amount_minor = _decimal(
+                conversion["buy_amount"] if bought_foreign else conversion["sell_amount"]
+            )
+            reporting_side = (
+                (-_decimal(conversion["sell_amount"]), sell_currency)
+                if bought_foreign
+                else (_decimal(conversion["buy_amount"]), buy_currency)
+            )
+            try:
+                reporting_minor = self.accounting.fx.convert_minor(
+                    reporting_side[0],
+                    reporting_side[1],
+                    self.reporting_currency,
+                    conversion["converted_on"],
+                )
+            except MissingRateError:
+                reporting_minor = None
+            actual = Decimal(str(conversion["actual_rate"]))
+            market = (
+                Decimal(str(conversion["market_rate"]))
+                if conversion["market_rate"] is not None
+                else None
+            )
+            rows.append(
+                {
+                    "date": conversion["converted_on"],
+                    "amount": major(amount_minor, currency),
+                    "currency": currency,
+                    "reporting_amount": (
+                        major(reporting_minor, self.reporting_currency)
+                        if reporting_minor is not None
+                        else None
+                    ),
+                    "rate": float(actual),
+                    "rate_date": conversion["converted_on"],
+                    "rate_source": "conversion",
+                    "rate_is_actual": True,
+                    "market_rate": float(market) if market is not None else None,
+                    "market_rate_date": conversion["market_rate_date"],
+                    "markup_pct": (
+                        float(
+                            (
+                                conversion_cost(
+                                    actual,
+                                    market,
+                                    sell_currency=sell_currency,
+                                    base_currency=conversion["base_currency"],
+                                )
+                                * 100
+                            ).quantize(Decimal("0.01"))
+                        )
+                        if market is not None
+                        else None
+                    ),
+                    "kind": "currency_purchase" if bought_foreign else "currency_sale",
+                }
+            )
+        return rows, event_ids, document_ids
+
     def _currency_purchase_rows(self, as_of: str) -> list[dict]:
         documents = fx_conversion_documents(self.con, as_of=as_of)
-        represented: set[int] = set()
-        rows: list[dict] = []
+        rows, linked_events, represented = self._recorded_conversion_rows(as_of)
         for account in self.accounting.accounts(as_of, include_closed=True):
             if account["kind"] != "brokerage":
                 continue
             for transaction in self.accounting.transactions(account["id"], as_of):
                 source_doc_id = transaction.get("source_doc_id")
+                if transaction.get("is_canonical") and int(transaction["id"]) in linked_events:
+                    continue
                 if not is_internal_fx_transaction(transaction, documents):
                     continue
                 amount_minor = _decimal(transaction["amount_minor"])
@@ -486,7 +591,7 @@ class DashboardModelBuilder(DashboardChartsMixin):
             ):
                 cumulative_external_usd_amount += Decimal(str(row["amount"]))
             if (
-                row["kind"] == "currency_purchase"
+                row["kind"] in {"currency_purchase", "currency_sale"}
                 and row["currency"] == "USD"
                 and row["amount"] is not None
             ):
@@ -562,7 +667,7 @@ class DashboardModelBuilder(DashboardChartsMixin):
                 row["kind"] == "brokerage_withdrawal" for row in rows
             ),
             "purchase_count": sum(
-                row["kind"] == "currency_purchase" for row in rows
+                row["kind"] in {"currency_purchase", "currency_sale"} for row in rows
             ),
             "total_reporting_amount": float(
                 sum(

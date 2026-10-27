@@ -218,7 +218,7 @@ Run the live dashboard independently:
 ./run_dashboard.sh
 ```
 
-Open `http://127.0.0.1:4173`. The private local server refreshes stored stock and FX observations every 30 minutes while it runs; the browser only reads its JSON snapshot.
+Open `http://127.0.0.1:4173`. The private local server backfills the current trading session every 5 minutes and runs a full stock/FX refresh every 30 minutes while it runs; the browser only reads its JSON snapshot.
 
 ## Automatic Bank Fetch Optional
 

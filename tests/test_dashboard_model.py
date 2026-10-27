@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
 import sys
@@ -11,6 +12,19 @@ sys.path.insert(0, str(ROOT / "scripts"))
 SCHEMA = (ROOT / "scripts" / "init-db.sql").read_text(encoding="utf-8")
 
 from findash_core.dashboard_model import DashboardModelBuilder  # noqa: E402
+from findash_core.ledger.engine import LedgerWriter  # noqa: E402
+
+
+def daily_dates(start: str, end: str) -> list[str]:
+    """The chart timeline is one point per day, inclusive of both ends."""
+
+    cursor = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    out = []
+    while cursor <= last:
+        out.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return out
 
 
 class DashboardModelTest(unittest.TestCase):
@@ -69,7 +83,7 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con)._net_worth_chart("2026-01-08")
 
-        self.assertEqual(chart["dates"], ["2026-01-01", "2026-01-08"])
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
         self.assertEqual(chart["coverage_basis"], "post_evidence_gap")
         self.assertNotIn(None, chart["values"])
 
@@ -131,7 +145,7 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con)._net_worth_chart("2026-01-08")
 
-        self.assertEqual(chart["dates"], ["2026-01-01", "2026-01-08"])
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
 
     def test_net_worth_breaks_when_snapshot_adds_item_to_known_account(self):
         con = sqlite3.connect(":memory:")
@@ -161,8 +175,8 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con)._net_worth_chart("2026-01-08")
 
-        self.assertEqual(chart["dates"], ["2026-01-01", "2026-01-08"])
-        self.assertEqual(chart["coverageBreaks"], [False, True])
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
+        self.assertEqual(chart["coverageBreaks"], [False] * 7 + [True])
 
     def test_net_worth_breaks_on_material_snapshot_reanchor(self):
         con = sqlite3.connect(":memory:")
@@ -183,7 +197,7 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con)._net_worth_chart("2026-01-08")
 
-        self.assertEqual(chart["coverageBreaks"], [False, True])
+        self.assertEqual(chart["coverageBreaks"], [False] * 7 + [True])
 
     def test_net_worth_connects_non_material_new_account_coverage(self):
         con = sqlite3.connect(":memory:")
@@ -211,7 +225,7 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con)._net_worth_chart("2026-01-08")
 
-        self.assertEqual(chart["coverageBreaks"], [False, False])
+        self.assertEqual(chart["coverageBreaks"], [False] * 8)
 
     def test_benchmark_seeds_from_opening_portfolio_then_applies_later_flows(self):
         con = sqlite3.connect(":memory:")
@@ -254,10 +268,11 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con).build("2026-01-08")["charts"]["stocksVsSpy"]
 
-        self.assertEqual(chart["dates"], ["2026-01-01", "2026-01-08"])
-        self.assertEqual(chart["stocks"], [1000.0, 1100.0])
-        self.assertEqual(chart["spy"], [1000.0, 1100.0])
-        self.assertEqual(chart["cumulativeDeposits"], [0.0, 100.0])
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
+        self.assertEqual(chart["stocks"], [1000.0] * 7 + [1100.0])
+        self.assertEqual(chart["spy"], [1000.0] * 7 + [1100.0])
+        self.assertEqual(chart["cumulativeDeposits"], [0.0] * 7 + [100.0])
+        self.assertEqual(chart["holdings"], {"HELD": [1000.0] * 8})
 
     def test_benchmark_excludes_liquid_study_fund_from_brokerage_value(self):
         con = sqlite3.connect(":memory:")
@@ -407,7 +422,7 @@ class DashboardModelTest(unittest.TestCase):
         model = DashboardModelBuilder(con).build("2026-01-08")
 
         chart = model["charts"]["stocksVsSpy"]
-        self.assertEqual(chart["spy"], [None, 100.0])
+        self.assertEqual(chart["spy"], [None] + [100.0] * 7)
         position = model["state"].positions[0]
         self.assertEqual(position.anchor_date, "2026-01-01")
         self.assertFalse(position.coverage.is_partial)
@@ -475,16 +490,19 @@ class DashboardModelTest(unittest.TestCase):
 
         model = DashboardModelBuilder(con).build("2026-01-08")
 
+        chart = model["charts"]["stocksVsSpy"]
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
+        self.assertEqual(chart["stocks"][0], 0.0)
+        self.assertEqual(chart["stocks"][1], 400.0)
+        # The held security has no close before 2026-01-08, so the days after
+        # the buy cannot be valued and stay honest gaps.
+        self.assertEqual(chart["stocks"][2:7], [None] * 5)
+        self.assertEqual(chart["stocks"][-1], 400.0)
+        self.assertEqual(chart["spy"], [None] + [400.0] * 7)
         self.assertEqual(
-            model["charts"]["stocksVsSpy"],
-            {
-                "dates": ["2026-01-01", "2026-01-08"],
-                "stocks": [0.0, 400.0],
-                "spy": [None, 400.0],
-                "cumulativeDeposits": [0.0, 400.0],
-                "currency": "ILS",
-            },
+            chart["cumulativeDeposits"], [0.0] + [400.0] * 7
         )
+        self.assertEqual(chart["currency"], "ILS")
         cash = next(
             row for row in model["state"].rows if row.item_key == "cash_usd"
         )
@@ -548,8 +566,8 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con).build("2026-01-08")["charts"]["stocksVsSpy"]
 
-        self.assertEqual(chart["stocks"], [0.0, 1000.0])
-        self.assertEqual(chart["spy"], [None, 1000.0])
+        self.assertEqual(chart["stocks"], [0.0] * 7 + [1000.0])
+        self.assertEqual(chart["spy"], [None] * 7 + [1000.0])
 
     def test_benchmark_can_seed_from_dated_whole_account_snapshot(self):
         con = sqlite3.connect(":memory:")
@@ -577,8 +595,8 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con).build("2026-01-08")["charts"]["stocksVsSpy"]
 
-        self.assertEqual(chart["stocks"], [1000.0, 1000.0])
-        self.assertEqual(chart["spy"], [1000.0, 1100.0])
+        self.assertEqual(chart["stocks"], [1000.0] * 8)
+        self.assertEqual(chart["spy"], [1000.0] * 7 + [1100.0])
 
     def test_benchmark_axis_includes_later_aggregate_seed_date(self):
         con = sqlite3.connect(":memory:")
@@ -592,7 +610,7 @@ class DashboardModelTest(unittest.TestCase):
             "INSERT INTO securities(ticker,name,asset_class,currency) VALUES(?,?,?,?)",
             ("SPY", "Benchmark", "benchmark", "ILS"),
         ).lastrowid
-        # This earlier flow makes the weekly axis start before the aggregate date.
+        # This earlier flow makes the axis start before the aggregate date.
         con.execute(
             """INSERT INTO transactions(
                    account_id,date,amount_minor,currency,category,flow_type
@@ -613,9 +631,9 @@ class DashboardModelTest(unittest.TestCase):
 
         chart = DashboardModelBuilder(con).build("2026-01-08")["charts"]["stocksVsSpy"]
 
-        self.assertEqual(chart["dates"], ["2026-01-01", "2026-01-03", "2026-01-08"])
-        self.assertIsNone(chart["spy"][0])
-        self.assertEqual(chart["spy"][1:], [1000.0, 1100.0])
+        self.assertEqual(chart["dates"], daily_dates("2026-01-01", "2026-01-08"))
+        self.assertEqual(chart["spy"][:2], [None, None])
+        self.assertEqual(chart["spy"][2:], [1000.0] * 5 + [1100.0])
 
     def test_overview_freshness_uses_oldest_account_dependency(self):
         con = sqlite3.connect(":memory:")
@@ -641,29 +659,6 @@ class DashboardModelTest(unittest.TestCase):
         shown = model["overview"]["buckets"][0]["accounts"][0]
 
         self.assertEqual(shown["observed_through"], "2026-01-01")
-
-    def test_fx_chart_prefers_document_rate_across_quote_orientation(self):
-        con = sqlite3.connect(":memory:")
-        self.addCleanup(con.close)
-        con.executescript(SCHEMA)
-        con.executemany(
-            """INSERT INTO fx_rates(
-                   date,base_currency,quote_currency,rate,source
-               ) VALUES(?,?,?,?,?)""",
-            [
-                ("2026-01-02", "USD", "ILS", 3.5, "yahoo"),
-                ("2026-01-02", "ILS", "USD", 0.25, "document"),
-            ],
-        )
-
-        chart = DashboardModelBuilder(con)._fx_chart([])
-
-        self.assertEqual(chart["dates"], ["2026-01-02"])
-        self.assertEqual(chart["usd"], [4.0])
-        self.assertEqual(
-            chart["series"],
-            [{"currency": "USD", "values": [4.0]}],
-        )
 
     def test_forex_activity_separates_funding_from_currency_purchases(self):
         con = sqlite3.connect(":memory:")
@@ -773,6 +768,64 @@ class DashboardModelTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_forex_activity_shows_actual_and_market_rate_for_conversions(self):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.executescript(SCHEMA)
+        con.execute("PRAGMA foreign_keys=ON")
+        con.executescript(
+            """
+            INSERT INTO accounts(id,name,kind,institution,currency)
+            VALUES (1,'Checking','checking','Bank','ILS'),
+                   (2,'Broker','brokerage','Broker','USD');
+            INSERT INTO account_feeds(account_id,provider,feed_type)
+            VALUES (1,'bank','api');
+            INSERT INTO documents(drive_id,drive_path,filename,doc_type,doc_date)
+            VALUES ('fx-doc','fx-conversions/2026/a.png','a.png','fx_conversion','2026-10-12');
+            INSERT INTO fx_rates(date,base_currency,quote_currency,rate,source)
+            VALUES ('2026-10-12','USD','ILS',3.0724,'yahoo');
+            """
+        )
+        LedgerWriter(con).apply(
+            [
+                {
+                    "type": "transfer",
+                    "date": "2026-10-12",
+                    "amount": "10000",
+                    "currency": "ILS",
+                    "from": {"account": 1, "evidence": {"feed": "bank", "key": "t1"}},
+                    "to": {"account": 2, "confirmed_by": "conversion document"},
+                },
+                {
+                    "type": "fx_conversion",
+                    "account": 2,
+                    "date": "2026-10-12",
+                    "sell": {"amount": "10000", "currency": "ILS"},
+                    "buy": {"currency": "USD"},
+                    "rate": "3.1246",
+                    "evidence": {"document": "fx-doc", "row": 1},
+                },
+            ]
+        )
+        builder = DashboardModelBuilder(con)
+        deposits = builder._deposits(builder.accounting.external_flows("2026-10-31"))
+        forex = builder._forex_activity(deposits, "2026-10-31")
+
+        purchases = [row for row in forex["rows"] if row["kind"] == "currency_purchase"]
+        self.assertEqual(len(purchases), 1)
+        purchase = purchases[0]
+        self.assertEqual(
+            (purchase["amount"], purchase["currency"], purchase["reporting_amount"]),
+            (3200.41, "USD", 10000.0),
+        )
+        self.assertEqual(
+            (purchase["rate"], purchase["market_rate"], purchase["markup_pct"]),
+            (3.1246, 3.0724, 1.7),
+        )
+        self.assertTrue(purchase["rate_is_actual"])
+        self.assertEqual(forex["funding_count"], 1)
+        self.assertEqual(forex["net_external_reporting_amount"], 10000.0)
 
     def test_internal_fx_semantics_do_not_depend_on_vault_folder(self):
         con = sqlite3.connect(":memory:")

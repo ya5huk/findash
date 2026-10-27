@@ -3,8 +3,7 @@ import { createRoot } from 'react-dom/client'
 import {
   DividendMonthlyChart,
   ExpenseCategoryChart,
-  ExpenseMonthlyChart,
-  ForexActivityChart,
+  MonthlyFlowChart,
   InteractiveLineChart,
 } from './charts'
 import './styles.css'
@@ -135,7 +134,7 @@ function visibleOverviewBuckets(data) {
     .filter((bucket) => bucket.accounts.length)
 }
 
-function MiniPriceChart({ values = [], tone = 'neutral', ticker, previousSession = false }) {
+function MiniPriceChart({ values = [], tone = 'neutral', ticker, phase = 'regular' }) {
   const finite = values.map(Number).filter(Number.isFinite)
   if (!finite.length) return <span className="market-spark-empty">No session history</span>
   const width = 128
@@ -149,13 +148,18 @@ function MiniPriceChart({ values = [], tone = 'neutral', ticker, previousSession
     const y = height - 4 - ((value - min) / spread) * (height - 8)
     return `${x.toFixed(1)},${y.toFixed(1)}`
   }).join(' ')
+  const sessionLabel = phase === 'pre'
+    ? 'pre-market'
+    : phase === 'previous'
+      ? 'previous session'
+      : 'current session'
 
   return (
     <svg
-      className={`market-spark market-spark-${tone}`}
+      className={`market-spark market-spark-${tone}${phase === 'pre' ? ' market-spark-pre' : ''}`}
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${ticker} ${previousSession ? 'previous' : 'current'} session price history`}
+      aria-label={`${ticker} ${sessionLabel} price history`}
       preserveAspectRatio="none"
     >
       <line x1="0" x2={width} y1={height / 2} y2={height / 2} />
@@ -519,20 +523,18 @@ function DividendView({ data }) {
 }
 
 function ForexView({ data }) {
-  const ledgerLimit = 20
   const forex = data.forex_activity || {
     rows: [],
     summary: [],
     total_reporting_amount: 0,
   }
   const funding = forex.rows || []
-  const recentFunding = funding.slice(0, ledgerLimit)
   return (
     <section className="forex-view" aria-labelledby="forex-view-title">
       <header className="market-section-heading">
         <div>
           <h3 id="forex-view-title">Forex</h3>
-          <p>Historical exchange rates with brokerage funding and documented currency purchases marked.</p>
+          <p>Brokerage funding, withdrawals, and documented currency purchases at their historical rates.</p>
         </div>
         <span>
           {forex.funding_count || 0} funding · {forex.withdrawal_count || 0} withdrawals
@@ -546,25 +548,14 @@ function ForexView({ data }) {
           {forex.purchase_count || 0} internal FX purchases
         </span>
       </header>
-      <ForexActivityChart
-        chart={data.charts.fxDeposits || {}}
-        activity={funding.filter(
-          (event) => event.currency !== data.reporting_currency,
-        )}
-        reportingCurrency={data.reporting_currency}
-      />
       {funding.length ? (
         <div
           className="table-scroll forex-ledger-scroll"
           role="region"
-          aria-label={`Latest ${recentFunding.length} of ${funding.length} recorded forex activities`}
+          aria-label={`All ${funding.length} recorded forex activities, newest to oldest`}
           tabIndex="0"
         >
           <table className="ledger forex-ledger">
-            <caption>
-              Latest {recentFunding.length} of {funding.length} activities · newest to oldest
-              {' · '}FX purchases move brokerage cash but do not change external capital
-            </caption>
             <thead>
               <tr>
                 <th>Date</th>
@@ -577,13 +568,15 @@ function ForexView({ data }) {
               </tr>
             </thead>
             <tbody>
-              {recentFunding.map((event, index) => (
+              {funding.map((event, index) => (
                 <tr key={`${event.date}-${event.currency}-${index}`}>
                   <td className="muted">{event.date}</td>
                   <td>
                     {event.kind === 'currency_purchase'
                       ? 'FX purchase'
-                      : event.kind === 'brokerage_withdrawal'
+                      : event.kind === 'currency_sale'
+                        ? 'FX sale'
+                        : event.kind === 'brokerage_withdrawal'
                         ? 'Withdrawal'
                         : 'Funding'}
                   </td>
@@ -592,10 +585,26 @@ function ForexView({ data }) {
                       ? '—'
                       : money(event.amount, event.currency, 2)}
                   </td>
-                  <td className="num forex-rate-cell">
-                    {event.rate == null ? '—' : number(event.rate, 4)}
-                    {event.rate != null && (
-                      <small>{event.rate_is_actual ? 'actual' : 'reference'}</small>
+                  <td
+                    className="num forex-rate-cell"
+                    title={event.rate == null
+                      ? undefined
+                      : event.rate_is_actual
+                        ? 'Actual applied rate'
+                        : 'Reference market rate'}
+                  >
+                    {event.rate == null ? '—' : (
+                      <>
+                        {number(event.rate, 4)}
+                        <em>{event.rate_is_actual ? 'actual' : 'ref'}</em>
+                      </>
+                    )}
+                    {event.market_rate != null && (
+                      <small>
+                        mkt {number(event.market_rate, 4)}
+                        {event.markup_pct != null &&
+                          ` · ${event.markup_pct > 0 ? '+' : ''}${number(event.markup_pct, 2)}%`}
+                      </small>
                     )}
                   </td>
                   <td className="num">
@@ -618,7 +627,9 @@ function ForexView({ data }) {
                       data.reporting_currency,
                       2,
                     )}
-                    {event.kind === 'currency_purchase' && <small>unchanged</small>}
+                    {(event.kind === 'currency_purchase' || event.kind === 'currency_sale') && (
+                      <small>unchanged</small>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -634,6 +645,16 @@ function ForexView({ data }) {
 
 function Markets({ data }) {
   const benchmark = data.charts.stocksVsSpy
+  const [selectedKey, setSelectedKey] = useState(null)
+  const selectedPosition = data.positions.find(
+    (position) => `${position.account_id}-${position.security_id}` === selectedKey,
+  )
+  const selectedValues = selectedPosition
+    ? (benchmark.holdings || {})[selectedPosition.ticker]
+    : null
+  const toggleSelected = (key) => {
+    setSelectedKey((current) => (current === key ? null : key))
+  }
   return (
     <>
       {data.positions.length ? (
@@ -644,23 +665,39 @@ function Markets({ data }) {
           const tone = trend.tone
           const pnl = position.pnl_usd
           const pnlTone = pnl == null || pnl === 0 ? 'neutral' : pnl > 0 ? 'positive' : 'negative'
+          const key = `${position.account_id}-${position.security_id}`
+          const selected = key === selectedKey
+          const phase = position.session_phase
+            || (position.session_is_previous ? 'previous' : 'regular')
           return (
             <article
-              className={`market-position market-position-${tone}`}
-              key={`${position.account_id}-${position.security_id}`}
+              className={`market-position market-position-${tone}${selected ? ' market-position-selected' : ''}`}
+              key={key}
               style={{ '--market-trend-alpha': trend.alpha }}
               tabIndex={0}
+              role="button"
+              aria-pressed={selected}
+              onClick={() => toggleSelected(key)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  toggleSelected(key)
+                }
+              }}
             >
               <div className="market-position-main">
                 <div className="market-identity">
-                  <strong>{position.ticker}</strong>
+                  <strong>
+                    {position.ticker}
+                    {phase === 'pre' && <em className="market-session-badge">pre-market</em>}
+                  </strong>
                   <small>{number(position.quantity, 6)} × {money(position.last_price, position.currency, 2)}</small>
                 </div>
                 <MiniPriceChart
                   ticker={position.ticker}
                   values={position.session_prices || []}
                   tone={tone}
-                  previousSession={position.session_is_previous}
+                  phase={phase}
                 />
                 <div className="market-value">
                   <strong>{money(position.market_usd, 'USD', 0)}</strong>
@@ -707,6 +744,13 @@ function Markets({ data }) {
         ariaLabel="Portfolio, benchmark, and net funding history"
         series={[
           { label: 'Portfolio', values: benchmark.stocks, tone: 'ink' },
+          ...(selectedValues
+            ? [{
+                label: selectedPosition.ticker,
+                values: selectedValues,
+                tone: 'ribbon',
+              }]
+            : []),
           { label: 'S&P 500', values: benchmark.spy, tone: 'muted', dashed: true },
           { label: 'Net funding', values: benchmark.cumulativeDeposits, tone: 'gold' },
         ]}
@@ -752,8 +796,8 @@ function Expenses({ data }) {
         </div>
       </div>
       <section className="expense-monthly" aria-labelledby="expense-monthly-title">
-        <h3 id="expense-monthly-title">Monthly totals — all time</h3>
-        <ExpenseMonthlyChart months={monthly} currency={data.reporting_currency} />
+        <h3 id="expense-monthly-title">Money in &amp; out — monthly</h3>
+        <MonthlyFlowChart months={monthly} currency={data.reporting_currency} />
       </section>
     </div>
   )
@@ -873,7 +917,7 @@ function App() {
           <div className="freshness-strip" aria-label="Data freshness">
             <div><span>Financial sync</span><strong>{timeLabel(data.freshness.last_sync_at)}</strong></div>
             <div><span>Market observed</span><strong>{timeLabel(data.freshness.market_observed_at)}</strong></div>
-            <div><span>Refresh cadence</span><strong>Every 30 minutes</strong></div>
+            <div><span>Refresh cadence</span><strong>5 min quotes · 30 min full</strong></div>
             <button onClick={requestRefresh} disabled={refreshed}>{refreshed ? 'Refreshing…' : 'Refresh now'}</button>
           </div>
         </div>

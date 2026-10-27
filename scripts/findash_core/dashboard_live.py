@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import copy
+import json
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -17,6 +20,7 @@ from findash_core.currencies import (
 from findash_core.errors import MissingRateError
 from findash_core.dashboard_model import DashboardModelBuilder, major
 from findash_core.db import connect_db
+from findash_core.market_data import FxBook
 
 
 def _latest_security_quotes(connection: sqlite3.Connection) -> dict[int, dict]:
@@ -94,7 +98,7 @@ def _live_fx_rate(
 
 
 def _usd_rate(
-    builder: DashboardModelBuilder,
+    fx: FxBook,
     quotes: dict[tuple[str, str], dict],
     source: str,
     reporting_currency: str,
@@ -113,18 +117,51 @@ def _usd_rate(
     if source_reporting and usd_reporting:
         return source_reporting[0] / usd_reporting[0]
     try:
-        return builder.accounting.fx.rate(source, "USD", as_of)
+        return fx.rate(source, "USD", as_of)
     except MissingRateError:
         try:
-            source_rate = builder.accounting.fx.rate(
-                source, reporting_currency, as_of
-            )
-            usd_rate = builder.accounting.fx.rate(
-                "USD", reporting_currency, as_of
-            )
+            source_rate = fx.rate(source, reporting_currency, as_of)
+            usd_rate = fx.rate("USD", reporting_currency, as_of)
             return source_rate / usd_rate
         except MissingRateError:
             return None
+
+
+def _market_session_bounds(
+    connection: sqlite3.Connection, security_id: int
+) -> dict | None:
+    """Session boundaries stored by the intraday refresh, if usable."""
+
+    row = connection.execute(
+        "SELECT value FROM meta WHERE key=?", (f"market_session:{security_id}",)
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        bounds = json.loads(str(row[0]))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(bounds, dict) or not bounds.get("regular_start"):
+        return None
+    return bounds
+
+
+def _session_observations(
+    connection: sqlite3.Connection,
+    security_id: int,
+    day: str,
+    currency: str,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """SELECT observed_at,price_minor
+             FROM security_price_observations
+            WHERE security_id=?
+              AND observed_at>=? || ' 00:00:00'
+              AND observed_at<datetime(? || ' 00:00:00','+1 day')
+              AND currency=?
+            ORDER BY observed_at,id""",
+        (security_id, day, day, currency),
+    ).fetchall()
 
 
 def _security_session(
@@ -134,7 +171,12 @@ def _security_session(
     current_price_minor: int | None,
     currency: str,
 ) -> dict:
-    """Return the latest market session, falling back to its daily closes."""
+    """Return the latest market session, falling back to its daily closes.
+
+    Phases: ``regular`` while (or after) today's regular session trades,
+    ``pre`` when only pre-market observations exist yet, and ``previous``
+    before pre-market opens, when yesterday's session is the honest view.
+    """
 
     daily = connection.execute(
         """SELECT date,close_minor,currency
@@ -145,25 +187,100 @@ def _security_session(
         (security_id, as_of),
     ).fetchall()
     if not daily:
-        return {"date": None, "prices": [], "previous_close_minor": None}
+        return {
+            "date": None,
+            "prices": [],
+            "previous_close_minor": None,
+            "phase": None,
+        }
 
     latest = daily[0]
-    session_date = str(latest["date"])
     session_currency = canonical_currency(str(latest["currency"]))
     if session_currency != canonical_currency(currency):
-        return {"date": session_date, "prices": [], "previous_close_minor": None}
+        return {
+            "date": str(latest["date"]),
+            "prices": [],
+            "previous_close_minor": None,
+            "phase": None,
+        }
 
+    def completed_close_before(day: str) -> int | None:
+        for row in daily:
+            if str(row["date"]) < day:
+                return int(row["close_minor"])
+        return None
+
+    def session_view(
+        values_minor: list[int],
+        *,
+        session_date: str,
+        phase: str,
+        previous_close: int | None,
+        effective_current: int,
+    ) -> dict:
+        values = list(values_minor)
+        if not values or values[-1] != effective_current:
+            values.append(effective_current)
+        if previous_close is not None:
+            values.insert(0, previous_close)
+        return {
+            "date": session_date,
+            "is_previous": phase == "previous",
+            "phase": phase,
+            "prices": [
+                value / minor_unit_factor(session_currency) for value in values
+            ],
+            "previous_close_minor": previous_close,
+            "current_price_minor": effective_current,
+        }
+
+    bounds = _market_session_bounds(connection, security_id)
+    if bounds and bounds.get("date") == as_of:
+        today_rows = _session_observations(
+            connection, security_id, as_of, session_currency
+        )
+        regular_start = str(bounds["regular_start"])
+        pre_start = bounds.get("pre_start")
+        regular_rows = [
+            int(row["price_minor"])
+            for row in today_rows
+            if str(row["observed_at"]) >= regular_start
+        ]
+        pre_rows = [
+            int(row["price_minor"])
+            for row in today_rows
+            if pre_start and str(pre_start) <= str(row["observed_at"]) < regular_start
+        ]
+        previous_close = completed_close_before(as_of)
+        if regular_rows and previous_close is not None:
+            return session_view(
+                regular_rows,
+                session_date=as_of,
+                phase="regular",
+                previous_close=previous_close,
+                effective_current=(
+                    current_price_minor
+                    if current_price_minor is not None
+                    else regular_rows[-1]
+                ),
+            )
+        if pre_rows and previous_close is not None:
+            # Pre-market movement is anchored to the completed session's close;
+            # the latest cached quote may still repeat that close, so the last
+            # pre-market trade is the honest current value.
+            return session_view(
+                pre_rows,
+                session_date=as_of,
+                phase="pre",
+                previous_close=previous_close,
+                effective_current=pre_rows[-1],
+            )
+
+    session_date = str(latest["date"])
     previous_close = int(daily[1]["close_minor"]) if len(daily) > 1 else None
-    observations = connection.execute(
-        """SELECT observed_at,price_minor
-             FROM security_price_observations
-            WHERE security_id=?
-              AND observed_at>=? || ' 00:00:00'
-              AND observed_at<datetime(? || ' 00:00:00','+1 day')
-              AND currency=?
-            ORDER BY observed_at,id""",
-        (security_id, session_date, session_date, session_currency),
-    ).fetchall()
+    observations = _session_observations(
+        connection, security_id, session_date, session_currency
+    )
     values_minor = [int(row["price_minor"]) for row in observations]
     previous_session = session_date < as_of
     # A quote observed while the market is closed only repeats the last traded
@@ -178,25 +295,63 @@ def _security_session(
             else int(latest["close_minor"])
         )
     )
-    if not values_minor or values_minor[-1] != effective_current:
-        values_minor.append(effective_current)
-    if previous_close is not None:
-        values_minor.insert(0, previous_close)
-
-    return {
-        "date": session_date,
-        "is_previous": previous_session,
-        "prices": [
-            value / minor_unit_factor(session_currency) for value in values_minor
-        ],
-        "previous_close_minor": previous_close,
-        "current_price_minor": effective_current,
-    }
+    return session_view(
+        values_minor,
+        session_date=session_date,
+        phase="previous" if previous_session else "regular",
+        previous_close=previous_close,
+        effective_current=effective_current,
+    )
 
 
 def _meta_value(connection: sqlite3.Connection, key: str) -> str | None:
     row = connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+def _db_fingerprint(db: Path) -> tuple:
+    """Cheap change detector for the deterministic model cache."""
+
+    parts = []
+    for path in (db, Path(f"{db}-wal")):
+        try:
+            stat = path.stat()
+            parts.append((stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            parts.append(None)
+    return tuple(parts)
+
+
+_MODEL_CACHE: dict = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
+def _deterministic_model(db: Path, as_of: str) -> tuple[dict, object]:
+    """Build (or reuse) the deterministic daily-valuation model.
+
+    Daily-resolution charts replay the whole normalized history, which is too
+    slow to recompute on every poll. The model only changes when the database
+    does, so it is cached per (database, as_of) until the file changes. Callers
+    receive a private copy of the model; the state rows are shared read-only.
+    """
+
+    fingerprint = _db_fingerprint(db)
+    key = (str(db), as_of)
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_CACHE.get(key)
+        if cached is None or cached["fingerprint"] != fingerprint:
+            connection = connect_db(db, readonly=True, migrate=False)
+            connection.row_factory = sqlite3.Row
+            try:
+                model = DashboardModelBuilder(connection).build(as_of)
+            finally:
+                connection.close()
+            state = model.pop("state")
+            # Only the current as_of matters; drop yesterday's entry on rollover.
+            _MODEL_CACHE.clear()
+            cached = {"fingerprint": fingerprint, "model": model, "state": state}
+            _MODEL_CACHE[key] = cached
+        return copy.deepcopy(cached["model"]), cached["state"]
 
 
 def build_live_dashboard_snapshot(db: Path, as_of: str) -> dict:
@@ -207,12 +362,11 @@ def build_live_dashboard_snapshot(db: Path, as_of: str) -> dict:
     app; historical charts continue to use the daily caches.
     """
 
+    model, state = _deterministic_model(db, as_of)
     connection = connect_db(db, readonly=True, migrate=False)
     connection.row_factory = sqlite3.Row
     try:
-        builder = DashboardModelBuilder(connection)
-        model = builder.build(as_of)
-        state = model.pop("state")
+        fx_book = FxBook(connection, model["reporting_currency"])
         security_quotes = _latest_security_quotes(connection)
         fx_quotes = _latest_fx_quotes(connection)
         reporting_currency = model["reporting_currency"]
@@ -245,7 +399,7 @@ def build_live_dashboard_snapshot(db: Path, as_of: str) -> dict:
                 )
                 fx_observed_at = fx_point[1]
             else:
-                live_reporting_minor = builder.accounting.fx.convert_minor(
+                live_reporting_minor = fx_book.convert_minor(
                     native_minor, row.currency, reporting_currency, as_of
                 ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
                 fx_observed_at = None
@@ -337,6 +491,7 @@ def build_live_dashboard_snapshot(db: Path, as_of: str) -> dict:
             )
             position["session_date"] = session["date"]
             position["session_is_previous"] = session.get("is_previous", False)
+            position["session_phase"] = session.get("phase")
             position["session_prices"] = session["prices"]
             previous_close = session["previous_close_minor"]
             effective_current = session.get("current_price_minor")
@@ -382,7 +537,7 @@ def build_live_dashboard_snapshot(db: Path, as_of: str) -> dict:
                 )
 
             usd_rate = _usd_rate(
-                builder, fx_quotes, currency, reporting_currency, as_of
+                fx_book, fx_quotes, currency, reporting_currency, as_of
             )
             if usd_rate is None:
                 position["market_usd"] = None

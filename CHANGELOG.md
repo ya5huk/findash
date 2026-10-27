@@ -25,6 +25,13 @@ plugin manifest (`.claude-plugin/plugin.json`).
   holdings, confirms expected transfers, conversions and dividends that uniquely
   explain a brokerage cash change, and lists what is still open. Sync closes what it
   can and reports only items stuck for more than seven days.
+- **Intraday price sessions on the dashboard.** `refresh_prices.py --intraday`
+  (and the light `--intraday-only`) backfills the whole current session — pre- and
+  post-market included — into `security_price_observations` at provider timestamps,
+  and stores each session's boundaries so the dashboard sparklines distinguish a
+  pre-market series from a regular one and stay complete even when the dashboard
+  was just opened. The dashboard server runs the light refresh every 5 minutes
+  between full 30-minute refreshes.
 
 ### Removed
 - **Single-purpose funding operations.** `infer-brokerage-funding` and

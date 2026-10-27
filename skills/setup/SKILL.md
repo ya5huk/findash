@@ -80,7 +80,7 @@ Run `findash-doctor` again and confirm it reports all-systems-go (or only option
 Finish with the two independent entry points:
 
 - `/findash:sync-finance-data` — fetch and ingest every configured source.
-- `./run_dashboard.sh` — run the localhost React dashboard; its server refreshes market references every 30 minutes.
+- `./run_dashboard.sh` — run the localhost React dashboard; its server refreshes intraday quotes every 5 minutes and full market references every 30 minutes.
 
 ## Principles
 

@@ -117,9 +117,89 @@ class LiveDashboardTest(unittest.TestCase):
 
         self.assertEqual(position["session_date"], "2026-08-03")
         self.assertTrue(position["session_is_previous"])
+        self.assertEqual(position["session_phase"], "previous")
         self.assertEqual(position["session_prices"], [125.0, 180.0, 200.0, 150.0])
         self.assertEqual(position["day_change_usd"], 50.0)
         self.assertEqual(position["day_change_pct"], 20.0)
+
+    def _store_session_bounds(self, day: str) -> None:
+        connection = sqlite3.connect(self.database)
+        self.addCleanup(connection.close)
+        security_id = connection.execute(
+            "SELECT id FROM securities WHERE ticker='DEMO'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+            (
+                f"market_session:{security_id}",
+                json.dumps(
+                    {
+                        "date": day,
+                        "pre_start": f"{day} 08:00:00",
+                        "regular_start": f"{day} 13:30:00",
+                        "regular_end": f"{day} 20:00:00",
+                        "post_end": f"{day} 23:59:00",
+                    }
+                ),
+            ),
+        )
+        return connection, security_id
+
+    def test_pre_market_observations_render_as_a_pre_session(self):
+        connection, security_id = self._store_session_bounds("2026-08-04")
+        connection.executemany(
+            """INSERT INTO security_price_observations(
+                   security_id,observed_at,price_minor,currency,source
+               ) VALUES(?,?,?,'USD','yahoo-intraday')""",
+            [
+                (security_id, "2026-08-04 08:05:00", 15500),
+                (security_id, "2026-08-04 09:00:00", 16000),
+            ],
+        )
+        connection.commit()
+
+        snapshot = build_live_dashboard_snapshot(self.database, "2026-08-04")
+        position = snapshot["positions"][0]
+
+        self.assertEqual(position["session_phase"], "pre")
+        self.assertEqual(position["session_date"], "2026-08-04")
+        self.assertFalse(position["session_is_previous"])
+        # Previous close first, then the pre-market trades only.
+        self.assertEqual(position["session_prices"], [150.0, 155.0, 160.0])
+        self.assertEqual(position["day_change_pct"], (160 - 150) / 150 * 100)
+
+    def test_regular_session_uses_only_observations_after_the_open(self):
+        connection, security_id = self._store_session_bounds("2026-08-04")
+        connection.executemany(
+            """INSERT INTO security_price_observations(
+                   security_id,observed_at,price_minor,currency,source
+               ) VALUES(?,?,?,'USD','yahoo-intraday')""",
+            [
+                (security_id, "2026-08-04 08:05:00", 15500),
+                (security_id, "2026-08-04 13:35:00", 17000),
+                (security_id, "2026-08-04 14:00:00", 17500),
+            ],
+        )
+        connection.commit()
+
+        snapshot = build_live_dashboard_snapshot(self.database, "2026-08-04")
+        position = snapshot["positions"][0]
+
+        self.assertEqual(position["session_phase"], "regular")
+        self.assertEqual(position["session_date"], "2026-08-04")
+        # Yesterday's close, then the regular session only — the 08:05
+        # pre-market trade stays out of the regular-session series.
+        self.assertEqual(position["session_prices"], [150.0, 170.0, 175.0])
+
+    def test_bounds_for_another_day_fall_back_to_previous_session(self):
+        connection, _ = self._store_session_bounds("2026-08-03")
+        connection.commit()
+
+        snapshot = build_live_dashboard_snapshot(self.database, "2026-08-04")
+        position = snapshot["positions"][0]
+
+        self.assertEqual(position["session_phase"], "previous")
+        self.assertTrue(position["session_is_previous"])
 
 
 if __name__ == "__main__":

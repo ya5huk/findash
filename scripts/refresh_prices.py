@@ -5,13 +5,22 @@ refresh_prices.py — keep the `prices` and `fx_rates` tables fresh from Yahoo F
 Modes:
   --range 1mo (default): daily top-up for currently-held securities + benchmark + FX.
   --range 3y           : full backfill for every security with any trade ever + benchmark + FX.
+  --intraday           : also fetch the current session's intraday series (incl.
+                         pre/post market) for currently-held securities.
+  --intraday-only      : only the intraday fetch — the light between-full refresh.
 
 Any security with zero existing price rows is auto-promoted to a 3y fetch regardless
 of the mode flag (covers the "I bought a new ticker today" case).
 
 Writes:
   prices    — provider close cache, updated deterministically by security + date.
-  security_price_observations — append-only values seen by each live refresh.
+  security_price_observations — append-only values seen by each live refresh; the
+              intraday fetch backfills the whole session at provider timestamps
+              (source='yahoo-intraday') so the dashboard sparkline is complete
+              even when the dashboard was just opened.
+  meta      — 'market_session:<security_id>' JSON with the fetched session's
+              pre/regular/post boundaries (UTC), so the dashboard can tell a
+              pre-market series from a regular one.
   fx_rates  — source-aware UPSERT that NEVER overwrites rows with source='document'.
   fx_rate_observations — append-only values seen by each live refresh.
               Docs are the user's actual conversion rate on a given day; Yahoo only
@@ -138,6 +147,56 @@ def fetch_yahoo_history_with_currency(
     """Price history with Yahoo's quote-unit code (for example GBp or ILA)."""
 
     return _fetch_yahoo_history(symbol, range_str, timeout)
+
+
+def fetch_yahoo_intraday(
+    symbol: str, timeout: int = 20
+) -> Optional[tuple[list[tuple[int, float]], Optional[str], dict]]:
+    """Current-session points (epoch seconds), quote currency, and session bounds.
+
+    Includes pre- and post-market trading so the dashboard can show the
+    pre-market series before the regular session opens. One retry on 429.
+    """
+
+    encoded_symbol = urllib.parse.quote(symbol, safe="-._^=")
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
+        "?interval=5m&range=1d&includePrePost=true"
+    )
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers=YAHOO_HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.load(resp)
+            result = data["chart"]["result"][0]
+            timestamps = result.get("timestamp") or []
+            closes = (
+                result.get("indicators", {}).get("quote", [{}])[0].get("close") or []
+            )
+            out: list[tuple[int, float]] = []
+            for ts, close in zip(timestamps, closes):
+                if close is None:
+                    continue
+                out.append((int(ts), float(close)))
+            meta = result.get("meta") or {}
+            currency = meta.get("currency")
+            periods = meta.get("currentTradingPeriod") or {}
+            return out, currency, periods
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                time.sleep(RETRY_SLEEP_S)
+                continue
+            return None
+        except (
+            urllib.error.URLError,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+            TimeoutError,
+        ):
+            return None
+    return None
 
 
 def close_to_minor(
@@ -503,6 +562,70 @@ def refresh_security(
     return inserted, True
 
 
+def _utc_text(epoch_seconds: int) -> str:
+    return (
+        datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+        .strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+
+def store_market_session(cur: sqlite3.Cursor, sid: int, periods: dict) -> bool:
+    """Persist the fetched session's pre/regular/post boundaries (UTC)."""
+
+    regular = periods.get("regular") or {}
+    if not regular.get("start") or not regular.get("end"):
+        return False
+    pre = periods.get("pre") or {}
+    post = periods.get("post") or {}
+    bounds = {
+        "date": _utc_text(int(regular["start"]))[:10],
+        "pre_start": _utc_text(int(pre["start"])) if pre.get("start") else None,
+        "regular_start": _utc_text(int(regular["start"])),
+        "regular_end": _utc_text(int(regular["end"])),
+        "post_end": _utc_text(int(post["end"])) if post.get("end") else None,
+    }
+    cur.execute(
+        """INSERT INTO meta(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (f"market_session:{sid}", json.dumps(bounds)),
+    )
+    return True
+
+
+def refresh_security_intraday(
+    cur: sqlite3.Cursor, sid: int, ticker: str, ccy: str
+) -> tuple[int, bool]:
+    """Backfill today's session observations so the sparkline is complete."""
+
+    if not _table_exists(cur, "security_price_observations"):
+        return 0, True
+    fetched = fetch_yahoo_intraday(yahoo_symbol_for(ticker))
+    if fetched is None:
+        return 0, False
+    points, yahoo_currency, periods = fetched
+    if not yahoo_currency:
+        return 0, False
+    try:
+        stored_currency = canonical_currency(ccy)
+        normalized = [
+            (ts, close_to_minor(close, ccy, yahoo_currency))
+            for ts, close in points
+        ]
+    except (TypeError, ValueError):
+        return 0, False
+    written = 0
+    for ts, price_minor in normalized:
+        cur.execute(
+            """INSERT OR IGNORE INTO security_price_observations(
+                   security_id,observed_at,price_minor,currency,source
+               ) VALUES(?,?,?,?,'yahoo-intraday')""",
+            (sid, _utc_text(ts), price_minor, stored_currency),
+        )
+        written += cur.rowcount
+    store_market_session(cur, sid, periods)
+    return written, True
+
+
 def refresh_fx(
     cur: sqlite3.Cursor, base: str, quote: str, range_str: str
 ) -> tuple[int, bool]:
@@ -539,10 +662,51 @@ def main() -> None:
         "--range", default="1mo", choices=VALID_RANGES,
         help="Time range to fetch (default 1mo for daily top-up; use 3y for backfill).",
     )
+    ap.add_argument(
+        "--intraday", action="store_true",
+        help="Also fetch the current session's intraday series for held securities.",
+    )
+    ap.add_argument(
+        "--intraday-only", action="store_true",
+        help="Fetch only the intraday series (skip daily prices, dividends, FX).",
+    )
     args = ap.parse_args()
 
     con = connect_db(DEFAULT_DB)
     cur = con.cursor()
+
+    intraday_targets: list[dict] = []
+    if args.intraday or args.intraday_only:
+        # Currently-held securities; the benchmark rides along when it is also
+        # a real holding, and costs one extra request otherwise.
+        intraday_targets = securities_to_fetch(cur, "1mo")
+
+    if args.intraday_only:
+        intraday_failures = 0
+        intraday_successes = 0
+        intraday_rows = 0
+        for i, t in enumerate(intraday_targets):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_S)
+            n, ok = refresh_security_intraday(
+                cur, t["id"], t["ticker"], t["currency"]
+            )
+            if ok:
+                intraday_successes += 1
+            else:
+                intraday_failures += 1
+            intraday_rows += n
+        con.commit()
+        con.close()
+        print("Market refresh: mode=intraday")
+        print(
+            "Intraday: "
+            f"attempted={len(intraday_targets)} succeeded={intraday_successes} "
+            f"failed={intraday_failures} rows_written={intraday_rows}"
+        )
+        if intraday_failures and intraday_failures == len(intraday_targets):
+            sys.exit(1)
+        return
 
     # Benchmarks are reference metadata, not user facts. Create SPY in the refresh
     # write path so the renderer can remain strictly read-only.
@@ -566,6 +730,19 @@ def main() -> None:
         else:
             price_failures += 1
         total_inserted += n
+    con.commit()
+
+    intraday_failures = 0
+    intraday_successes = 0
+    intraday_rows = 0
+    for t in intraday_targets:
+        time.sleep(REQUEST_DELAY_S)
+        n, ok = refresh_security_intraday(cur, t["id"], t["ticker"], t["currency"])
+        if ok:
+            intraday_successes += 1
+        else:
+            intraday_failures += 1
+        intraday_rows += n
     con.commit()
 
     distribution_targets = distribution_securities_to_fetch(cur)
@@ -627,6 +804,12 @@ def main() -> None:
         f"attempted={len(targets)} succeeded={price_successes} "
         f"failed={price_failures} rows_written={total_inserted}"
     )
+    if intraday_targets:
+        print(
+            "Intraday: "
+            f"attempted={len(intraday_targets)} succeeded={intraday_successes} "
+            f"failed={intraday_failures} rows_written={intraday_rows}"
+        )
     print(
         "FX: "
         f"attempted={len(fx_pairs)} succeeded={fx_successes} "
@@ -640,9 +823,14 @@ def main() -> None:
         f"rows_written={distribution_written}"
     )
 
-    total_attempts = len(targets) + len(fx_pairs) + len(distribution_targets)
+    total_attempts = (
+        len(targets)
+        + len(intraday_targets)
+        + len(fx_pairs)
+        + len(distribution_targets)
+    )
     total_failures = (
-        price_failures + fx_failures + distribution_failures
+        price_failures + intraday_failures + fx_failures + distribution_failures
     )
     if total_failures and total_failures == total_attempts:
         sys.exit(1)

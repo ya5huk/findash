@@ -15,8 +15,8 @@ small deterministic toolchain keep the data trustworthy:
 - **Skills reason** over messy real-world records—bank statements, payslips,
   brokerage screenshots, deposits, transfers, and card charges.
 - **SQLite keeps the evidence trail** and drives every total shown by the dashboard.
-- **The local React app is the main interface**, with live stock/FX observations
-  refreshed every 30 minutes while it runs.
+- **The local React app is the main interface**, with intraday quotes refreshed
+  every 5 minutes and a full market refresh every 30 minutes while it runs.
 
 The core loop is simple: sync every configured source into SQLite, then open the
 dashboard. Data collection and viewing stay independent, so scheduled syncs
@@ -77,8 +77,8 @@ Drive gathering, staged ingestion, reconciliation, market-cache refresh, Drive
 filing, and the gated backup. It writes the database only.
 
 `./run_dashboard.sh` is the normal way to use FinDash. It starts the private
-localhost React app and appends current stock/FX observations to SQLite every
-30 minutes.
+localhost React app, backfills the current trading session into SQLite every
+5 minutes, and runs a full market refresh every 30 minutes.
 
 ## The Skills
 

@@ -27,15 +27,39 @@ class MarketRefreshServiceTest(unittest.TestCase):
                 str(dashboard_server.REFRESH_SCRIPT),
                 "--range",
                 "1mo",
+                "--intraday",
             ],
         )
         self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
         self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
         self.assertEqual(service.status()["last_ok"], True)
 
+    def test_light_refresh_only_fetches_the_intraday_session(self):
+        service = dashboard_server.MarketRefreshService(1800)
+        completed = MagicMock(returncode=0)
+
+        with patch.object(
+            dashboard_server.subprocess, "run", return_value=completed
+        ) as run:
+            service._refresh(full=False)
+
+        args, _ = run.call_args
+        self.assertEqual(
+            args[0],
+            [
+                dashboard_server.sys.executable,
+                str(dashboard_server.REFRESH_SCRIPT),
+                "--intraday-only",
+            ],
+        )
+
     def test_interval_below_one_minute_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "at least 60 seconds"):
             dashboard_server.MarketRefreshService(59)
+
+    def test_intraday_interval_below_one_minute_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "at least 60 seconds"):
+            dashboard_server.MarketRefreshService(1800, intraday_seconds=59)
 
 
 class DashboardRequestHandlerTest(unittest.TestCase):

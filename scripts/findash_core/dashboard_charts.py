@@ -17,7 +17,7 @@ def _major(amount_minor: Decimal | int, currency: str) -> float:
     return float(Decimal(amount_minor) / minor_unit_factor(currency))
 
 
-def _timeline(start: date, end: date, step_days: int = 7) -> list[str]:
+def _timeline(start: date, end: date, step_days: int = 1) -> list[str]:
     rows: list[str] = []
     cursor = start
     while cursor <= end:
@@ -44,7 +44,6 @@ class DashboardChartsMixin:
             "stocksVsSpy": self._benchmark_chart(external_flows, as_of),
             "payslips": self._payslip_chart(as_of),
             "expenses": self._expense_charts(flows, as_of),
-            "fxDeposits": self._fx_chart(external_flows),
             "dividends": self._dividend_chart(as_of, dividend_analysis),
         }
 
@@ -82,7 +81,7 @@ class DashboardChartsMixin:
         ]
         first = evidence_dates[0] if evidence_dates else None
         coverage_basis = "earliest_account_evidence"
-        # A lone old statement cannot support a continuous weekly line forever.
+        # A lone old statement cannot support a continuous daily line forever.
         # Start again after the last system-wide evidence gap longer than eighteen
         # months. Unlike a brokerage-specific rule, this preserves genuinely
         # continuous bank history for users who invested only later.
@@ -221,12 +220,13 @@ class DashboardChartsMixin:
                 "stocks": [],
                 "spy": [],
                 "cumulativeDeposits": [],
+                "holdings": {},
                 "currency": self.reporting_currency,
             }
         start = date.fromisoformat(first)
         dates = _timeline(start, date.fromisoformat(as_of))
         # An old whole-account brokerage total is exact only on its observation
-        # date. Add those dates to the weekly display axis so a prior partial event
+        # date. Add those dates to the display axis so a prior partial event
         # cannot make the benchmark skip the only honest opening anchor.
         aggregate_dates = {
             str(row[0])
@@ -244,8 +244,12 @@ class DashboardChartsMixin:
             "stocks": [],
             "spy": [],
             "cumulativeDeposits": [],
+            "holdings": {},
             "currency": self.reporting_currency,
         }
+        # Per-ticker market value of the held position, so the UI can overlay a
+        # selected holding onto the portfolio/funding lines in the same unit.
+        holding_values: dict[str, list] = {}
         seed_date: Optional[str] = None
         opening_spy_shares = ZERO
         for point in dates:
@@ -270,6 +274,19 @@ class DashboardChartsMixin:
                 if state is not None
                 else None
             )
+
+            point_index = len(result["dates"])
+            per_ticker: dict[str, Decimal] = defaultdict(lambda: ZERO)
+            if state is not None:
+                for row in investment_rows:
+                    if row.item_type == "security" and row.ticker:
+                        per_ticker[row.ticker] += row.reporting_value_minor
+            for ticker, value in per_ticker.items():
+                series = holding_values.setdefault(ticker, [None] * point_index)
+                series.append(_major(value, self.reporting_currency))
+            for ticker, series in holding_values.items():
+                if len(series) <= point_index:
+                    series.append(None)
 
             def opening_row_is_complete(row) -> bool:
                 if not row.coverage.is_partial:
@@ -353,6 +370,13 @@ class DashboardChartsMixin:
             result["cumulativeDeposits"].append(
                 _major(cumulative, self.reporting_currency)
             )
+        # Only currently-held tickers are selectable in the UI; sold-out
+        # histories would bloat the payload without a box to click.
+        result["holdings"] = {
+            ticker: series
+            for ticker, series in holding_values.items()
+            if series and series[-1]
+        }
         return result
 
     def _payslip_chart(self, as_of: str) -> dict:
@@ -434,6 +458,7 @@ class DashboardChartsMixin:
                         [category, _major(value, self.reporting_currency)]
                         for category, value in top[:5]
                     ],
+                    "income": self._monthly_income(flow_month),
                 }
             )
         return {
@@ -450,82 +475,19 @@ class DashboardChartsMixin:
             "monthlyAlltime": monthly,
         }
 
-    def _fx_chart(self, external_flows) -> dict:
-        rows = self.con.execute(
-            """SELECT date, base_currency, quote_currency, rate, source FROM fx_rates
-               WHERE (quote_currency=? AND base_currency<>?)
-                  OR (base_currency=? AND quote_currency<>?)
-               ORDER BY date""",
-            (
-                self.reporting_currency,
-                self.reporting_currency,
-                self.reporting_currency,
-                self.reporting_currency,
-            ),
-        ).fetchall()
-        by_date: dict[str, dict[str, tuple[float, bool, bool]]] = defaultdict(dict)
-        for row in rows:
-            direct = row["quote_currency"] == self.reporting_currency
-            authoritative = str(row["source"]).lower() == "document"
-            currency = row["base_currency"] if direct else row["quote_currency"]
-            raw = float(row["rate"])
-            if raw <= 0:
-                continue
-            value = raw if direct else 1 / raw
-            previous = by_date[row["date"]].get(currency)
-            # Match FxBook: source authority outranks orientation on a same-day
-            # tie. Direct is only the deterministic tiebreaker after provenance.
-            if previous is None or (authoritative, direct) > (
-                previous[1],
-                previous[2],
-            ):
-                by_date[row["date"]][currency] = (
-                    value,
-                    authoritative,
-                    direct,
-                )
-        dates = sorted(by_date)
-        currencies = sorted(
-            {currency for values in by_date.values() for currency in values},
-            key=lambda currency: (
-                0 if currency == "USD" else 1 if currency == "GBP" else 2,
+    def _monthly_income(self, flow_month) -> dict:
+        # Refunds are carried inside other_income_minor; split them out so the
+        # breakdown sums exactly to the counted total.
+        currency = self.reporting_currency
+        return {
+            "total": _major(flow_month.total_income_minor, currency),
+            "salary": _major(flow_month.job_income_minor, currency),
+            "dividends": _major(flow_month.dividends_minor, currency),
+            "refunds": _major(flow_month.refunds_minor, currency),
+            "other": _major(
+                flow_month.other_income_minor - flow_month.refunds_minor,
                 currency,
             ),
-        )
-        return {
-            "dates": dates,
-            "series": [
-                {
-                    "currency": currency,
-                    "values": [
-                        by_date[d].get(currency, (None, False, False))[0]
-                        for d in dates
-                    ],
-                }
-                for currency in currencies
-            ],
-            "usd": [
-                by_date[d].get("USD", (None, False, False))[0] for d in dates
-            ],
-            "gbp": [
-                by_date[d].get("GBP", (None, False, False))[0] for d in dates
-            ],
-            "usdDeposits": [
-                {
-                    "date": flow.date,
-                    "amount": _major(flow.native_amount_minor, "USD"),
-                }
-                for flow in external_flows
-                if flow.currency == "USD" and flow.native_amount_minor > 0
-            ],
-            "gbpDeposits": [
-                {
-                    "date": flow.date,
-                    "amount": _major(flow.native_amount_minor, "GBP"),
-                }
-                for flow in external_flows
-                if flow.currency == "GBP" and flow.native_amount_minor > 0
-            ],
         }
 
     def _dividend_chart(
