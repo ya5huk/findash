@@ -1,6 +1,6 @@
 # findash
 
-Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + configured feeds → SQLite → local React dashboard. `sync-finance-data` is the complete update: it runs `fetch-bank-data`, attempts `fetch-investments`, gathers Drive drops, ingests and reconciles everything, refreshes cached market data, and performs the gated backup. `./run_dashboard.sh` runs the localhost React dashboard; its server appends stock/FX observations every 30 minutes. `setup` handles onboarding and `findash-doctor` audits the install. External failures become `⚠️` warnings unless local migration/ingestion cannot continue.
+Personal finance system, packaged as a Claude Code **plugin** (`findash`). Drive vault + configured feeds → SQLite → local React dashboard. `sync-finance-data` is the complete update: it runs `fetch-bank-data`, attempts `fetch-investments`, gathers Drive drops, ingests and reconciles everything, refreshes cached market data, and performs the gated backup. `./run_dashboard.sh` runs the localhost React dashboard; its server fetches the intraday session every 5 minutes and runs a full market refresh every 30 minutes. `setup` handles onboarding and `findash-doctor` audits the install. External failures become `⚠️` warnings unless local migration/ingestion cannot continue.
 
 Skills are namespaced by the plugin, so they're invoked as `/findash:<skill>`. Load the plugin by running Claude Code from the repo root with `claude --plugin-dir .`.
 
@@ -12,11 +12,11 @@ These shape every decision in this project. Re-read them when you're about to wr
 
 2. **Judgment over scripts.** Claude's reasoning is the asset, not a parser script. Don't write categorization rules, don't pattern-match filenames mechanically, don't hard-code "if counterparty contains X then category is Y". The example: a large outflow to a brokerage you own is *not* an expense — it's a transfer. Only Claude can see that, because Claude reads both the bank statement and the brokerage's deposit confirmation in the same session. Scripts can't.
 
-   Mechanical work (parsing XLSX bytes, executing SQL, decrypting a PDF with a known password, decoding a connector download into staging) is fine as a script. *Interpretation* of what the data means is always done by Claude.
+   Mechanical work (parsing XLSX bytes, executing SQL, decrypting a PDF with a known password, decoding a connector download into staging) is fine as a script. So is bookkeeping: once Claude decides what a movement *is*, the ledger engine writes every row that fact implies (legs, links, rates, dedup keys, review status) from a typed intent. *Interpretation* of what the data means is always done by Claude.
 
 3. **One topic per file.** A skill describes a flow; it never repeats schema details. The schema doc never repeats the Drive layout. If you're about to write the same fact in two places, stop and decide which file owns it.
 
-4. **Instruct, don't hardcode.** Tell Claude what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the React dashboard.
+4. **Instruct, don't hardcode.** Tell Claude what tables exist and what each doc type generally looks like. Don't dictate the SQL queries to run or the regexes to match. The exception is artifacts that can only be code: the SQL schema (`init-db.sql`), the XLSX byte-parser (`scripts/xlsx_to_rows.py`), the ledger engine (`scripts/findash_core/ledger/`), the React dashboard.
 
 5. **Money as integers.** All amounts are `amount_minor INTEGER` in the ISO currency's minor unit. Convert with the shared currency helpers; exponents vary, so never assume ×100 or store money as `REAL`.
 
@@ -63,6 +63,8 @@ These shape every decision in this project. Re-read them when you're about to wr
 └── scripts/
     ├── init-db.sql           ← schema definition
     ├── drive_root.py         ← prints the vault root folder id for the Drive connector, nothing else
+    ├── findash_db.py         ← the only DB gateway: query, apply (statements + ledger intents), reconcile
+    ├── findash_core/ledger/  ← ledger engine: typed intents → rows; daily reconcile + open items
     ├── staging_files.py      ← staging lifecycle: delete after ingest, save-download for connector pulls
     ├── backup_database.py    ← weekly consistent SQLite snapshot into data/backups/
     ├── xlsx_to_rows.py       ← stdlib-only XLSX → JSON parser

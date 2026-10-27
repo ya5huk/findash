@@ -7,8 +7,14 @@ from dataclasses import dataclass
 import sqlite3
 from typing import Callable
 
+from .ledger_relationships import (
+    DIVIDEND_EVENT_VALID,
+    FX_CONVERSION_VALID,
+    TRANSFER_LINK_VALID,
+)
 
-LATEST_SCHEMA_VERSION = 15
+
+LATEST_SCHEMA_VERSION = 16
 
 
 class MigrationError(RuntimeError):
@@ -261,152 +267,19 @@ def relationship_violation_counts(
                        )""",
                 )
             )
-    if _table_exists(connection, "inferred_transfer_links"):
-        checks.append(
-            (
-                "inferred_transfer_links",
-                """SELECT COUNT(*) FROM inferred_transfer_links AS link
-                   WHERE NOT EXISTS (
-                     SELECT 1
-                       FROM canonical_events AS outflow
-                       JOIN canonical_events AS inflow
-                         ON inflow.id=link.inflow_event_id
-                       JOIN accounts AS source_account
-                         ON source_account.id=outflow.account_id
-                       JOIN accounts AS destination_account
-                         ON destination_account.id=inflow.account_id
-                       JOIN balances AS before_balance
-                         ON before_balance.id=link.before_balance_id
-                       JOIN balances AS after_balance
-                         ON after_balance.id=link.after_balance_id
-                      WHERE outflow.id=link.outflow_event_id
-                        AND outflow.event_type='cash'
-                        AND outflow.flow_type='transfer'
-                        AND outflow.status='confirmed'
-                        AND outflow.amount_minor<0
-                        AND EXISTS (
-                          SELECT 1 FROM event_evidence AS source_evidence
-                           WHERE source_evidence.canonical_event_id=outflow.id
-                        )
-                        AND inflow.event_type='cash'
-                        AND inflow.flow_type='transfer'
-                        AND inflow.status='confirmed'
-                        AND inflow.amount_minor>0
-                        AND inflow.amount_minor=-outflow.amount_minor
-                        AND inflow.currency=outflow.currency
-                        AND inflow.occurred_on=outflow.occurred_on
-                        AND source_account.id<>destination_account.id
-                        AND source_account.kind<>'brokerage'
-                        AND destination_account.kind='brokerage'
-                        AND before_balance.account_id=inflow.account_id
-                        AND after_balance.account_id=inflow.account_id
-                        AND before_balance.currency=inflow.currency
-                        AND after_balance.currency=inflow.currency
-                        AND before_balance.component='cash_' || lower(inflow.currency)
-                        AND after_balance.component=before_balance.component
-                        AND before_balance.as_of<inflow.occurred_on
-                        AND inflow.occurred_on<=after_balance.as_of
-                        AND EXISTS (
-                          SELECT 1
-                            FROM balance_evidence AS before_evidence
-                            JOIN balance_evidence AS after_evidence
-                              ON after_evidence.account_feed_id=
-                                 before_evidence.account_feed_id
-                            JOIN account_feeds AS feed
-                              ON feed.id=before_evidence.account_feed_id
-                           WHERE before_evidence.canonical_balance_id=
-                                 before_balance.id
-                             AND after_evidence.canonical_balance_id=
-                                 after_balance.id
-                             AND before_evidence.account_snapshot_complete=1
-                             AND after_evidence.account_snapshot_complete=1
-                             AND feed.account_id=inflow.account_id
-                             AND feed.is_active=1
-                        )
-                   )""",
+    for table, predicate, alias in (
+        ("transfer_links", TRANSFER_LINK_VALID, "link"),
+        ("fx_conversions", FX_CONVERSION_VALID, "conversion"),
+        ("dividend_events", DIVIDEND_EVENT_VALID, "dividend"),
+    ):
+        if _table_exists(connection, table):
+            checks.append(
+                (
+                    table,
+                    f"""SELECT COUNT(*) FROM {table} AS {alias}
+                       WHERE NOT ({predicate.format(row=alias)})""",
+                )
             )
-        )
-    if _table_exists(connection, "funding_fx_links"):
-        checks.append(
-            (
-                "funding_fx_links",
-                """SELECT COUNT(*) FROM funding_fx_links AS link
-                   WHERE NOT EXISTS (
-                     SELECT 1
-                       FROM canonical_events AS bank_outflow
-                       JOIN canonical_events AS brokerage_inflow
-                         ON brokerage_inflow.id=link.brokerage_inflow_event_id
-                       JOIN canonical_events AS fx_source
-                         ON fx_source.id=link.fx_source_event_id
-                       JOIN canonical_events AS fx_destination
-                         ON fx_destination.id=link.fx_destination_event_id
-                       JOIN accounts AS bank_account
-                         ON bank_account.id=bank_outflow.account_id
-                       JOIN accounts AS brokerage_account
-                         ON brokerage_account.id=brokerage_inflow.account_id
-                      WHERE bank_outflow.id=link.bank_outflow_event_id
-                        AND bank_outflow.event_type='cash'
-                        AND bank_outflow.flow_type='transfer'
-                        AND bank_outflow.status='confirmed'
-                        AND bank_outflow.amount_minor<0
-                        AND EXISTS (
-                          SELECT 1 FROM event_evidence
-                           WHERE canonical_event_id=bank_outflow.id
-                        )
-                        AND bank_account.kind<>'brokerage'
-                        AND brokerage_account.kind='brokerage'
-                        AND brokerage_inflow.event_type='cash'
-                        AND brokerage_inflow.flow_type='transfer'
-                        AND brokerage_inflow.status='confirmed'
-                        AND brokerage_inflow.amount_minor=-bank_outflow.amount_minor
-                        AND brokerage_inflow.currency=bank_outflow.currency
-                        AND brokerage_inflow.occurred_on=bank_outflow.occurred_on
-                        AND brokerage_inflow.component=
-                            'cash_' || lower(brokerage_inflow.currency)
-                        AND fx_source.account_id=brokerage_inflow.account_id
-                        AND fx_source.event_type='cash'
-                        AND fx_source.flow_type='investment'
-                        AND lower(COALESCE(fx_source.category,''))='fx'
-                        AND fx_source.status='confirmed'
-                        AND fx_source.amount_minor=-brokerage_inflow.amount_minor
-                        AND fx_source.currency=brokerage_inflow.currency
-                        AND fx_source.component='cash_' || lower(fx_source.currency)
-                        AND fx_source.occurred_on>=brokerage_inflow.occurred_on
-                        AND fx_source.occurred_on<=
-                            date(brokerage_inflow.occurred_on,'+3 days')
-                        AND fx_destination.account_id=brokerage_inflow.account_id
-                        AND fx_destination.event_type='cash'
-                        AND fx_destination.flow_type='investment'
-                        AND lower(COALESCE(fx_destination.category,''))='fx'
-                        AND fx_destination.status='confirmed'
-                        AND fx_destination.amount_minor>0
-                        AND fx_destination.currency<>fx_source.currency
-                        AND fx_destination.component=
-                            'cash_' || lower(fx_destination.currency)
-                        AND fx_destination.occurred_on=fx_source.occurred_on
-                        AND EXISTS (
-                          SELECT 1
-                            FROM event_evidence AS source_evidence
-                            JOIN source_events AS source_observation
-                              ON source_observation.id=source_evidence.source_event_id
-                            JOIN event_evidence AS destination_evidence
-                              ON destination_evidence.canonical_event_id=
-                                 fx_destination.id
-                            JOIN source_events AS destination_observation
-                              ON destination_observation.id=
-                                 destination_evidence.source_event_id
-                            JOIN documents AS document
-                              ON document.id=source_observation.source_doc_id
-                           WHERE source_evidence.canonical_event_id=fx_source.id
-                             AND destination_observation.source_doc_id=document.id
-                             AND lower(replace(
-                                   COALESCE(document.doc_type,''),'-','_'))
-                                   IN ('fx_conversion',
-                                       'brokerage_fx_conversion')
-                        )
-                   )""",
-            )
-        )
     if _trigger_exists(connection, "balance_evidence_require_provenance_insert"):
         checks.extend(
             (

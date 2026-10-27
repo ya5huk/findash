@@ -181,23 +181,15 @@ def _require_identity_guards(connection: sqlite3.Connection) -> None:
                 "canonical_events_trade_cash_identity_update",
             }
         )
-    if _table_exists(connection, "inferred_transfer_links"):
-        required.update(
-            {
-                "inferred_transfer_links_valid_insert",
-                "inferred_transfer_links_valid_update",
-                "canonical_events_inferred_transfer_identity_update",
-                "balances_inferred_transfer_identity_update",
-            }
-        )
-    if _table_exists(connection, "funding_fx_links"):
-        required.update(
-            {
-                "funding_fx_links_valid_insert",
-                "funding_fx_links_valid_update",
-                "canonical_events_funding_fx_identity_update",
-            }
-        )
+    for table, identity_trigger in (
+        ("transfer_links", "canonical_events_transfer_identity_update"),
+        ("fx_conversions", "canonical_events_fx_conversion_identity_update"),
+        ("dividend_events", "canonical_events_dividend_identity_update"),
+    ):
+        if _table_exists(connection, table):
+            required.update(
+                {f"{table}_valid_insert", f"{table}_valid_update", identity_trigger}
+            )
     required.update(
         {
             "balance_evidence_require_provenance_insert",
@@ -462,57 +454,33 @@ def _validate_event_resolutions(
         )
 
 
-def _reject_inferred_transfer_dependencies(
+def _reject_ledger_link_dependencies(
     connection: sqlite3.Connection, account_id: int
 ) -> None:
-    if not _table_exists(connection, "inferred_transfer_links"):
-        return
-    linked = int(
-        connection.execute(
-            """SELECT COUNT(*)
-                 FROM inferred_transfer_links AS link
-                 JOIN canonical_events AS outflow
-                   ON outflow.id=link.outflow_event_id
-                 JOIN canonical_events AS inflow
-                   ON inflow.id=link.inflow_event_id
-                 JOIN balances AS before_balance
-                   ON before_balance.id=link.before_balance_id
-                 JOIN balances AS after_balance
-                   ON after_balance.id=link.after_balance_id
-                WHERE outflow.account_id=? OR inflow.account_id=?
-                   OR before_balance.account_id=? OR after_balance.account_id=?""",
-            (account_id, account_id, account_id, account_id),
-        ).fetchone()[0]
-    )
-    if linked:
-        raise ReconciliationError(
-            "account has inferred-transfer dependencies that require separate review "
-            f"(links={linked})"
+    linked: dict[str, int] = {}
+    for table, columns in (
+        ("transfer_links", ("outflow_event_id", "inflow_event_id")),
+        ("fx_conversions", ("sell_event_id", "buy_event_id")),
+        ("dividend_events", ("cash_event_id",)),
+    ):
+        if not _table_exists(connection, table):
+            continue
+        joins = " OR ".join(f"event.id=link.{column}" for column in columns)
+        count = int(
+            connection.execute(
+                f"""SELECT COUNT(DISTINCT link.rowid)
+                      FROM {table} AS link
+                      JOIN canonical_events AS event ON {joins}
+                     WHERE event.account_id=?""",
+                (account_id,),
+            ).fetchone()[0]
         )
-
-
-def _reject_funding_fx_dependencies(
-    connection: sqlite3.Connection, account_id: int
-) -> None:
-    if not _table_exists(connection, "funding_fx_links"):
-        return
-    linked = int(
-        connection.execute(
-            """SELECT COUNT(*)
-                 FROM funding_fx_links AS link
-                 JOIN canonical_events AS bank_outflow
-                   ON bank_outflow.id=link.bank_outflow_event_id
-                 JOIN canonical_events AS brokerage_inflow
-                   ON brokerage_inflow.id=link.brokerage_inflow_event_id
-                WHERE bank_outflow.account_id=?
-                   OR brokerage_inflow.account_id=?""",
-            (account_id, account_id),
-        ).fetchone()[0]
-    )
+        if count:
+            linked[table] = count
     if linked:
+        summary = ", ".join(f"{table}={count}" for table, count in sorted(linked.items()))
         raise ReconciliationError(
-            "account has funding-FX dependencies that require separate review "
-            f"(links={linked})"
+            f"account has ledger-link dependencies that require separate review ({summary})"
         )
 
 
@@ -792,10 +760,7 @@ def _run_reconciliation(
         raise ReconciliationError("source account cannot be closed on the requested date")
     _require_identity_guards(connection)
     _relationship_error(connection, phase="existing")
-    _reject_inferred_transfer_dependencies(
-        connection, request.source_account_id
-    )
-    _reject_funding_fx_dependencies(connection, request.source_account_id)
+    _reject_ledger_link_dependencies(connection, request.source_account_id)
     _validate_collisions(connection, request)
     _validate_anchor_resolutions(
         connection,

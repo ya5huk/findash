@@ -22,6 +22,10 @@ from findash_core.migrations import (  # noqa: E402
     apply_migrations,
     schema_version,
 )
+from findash_core.migration_transfers import (  # noqa: E402
+    _migration_14_inferred_account_transfers,
+    _migration_15_funding_fx_links,
+)
 from migrate_db import initialize  # noqa: E402
 import migrate_db as migrate_db_module  # noqa: E402
 
@@ -300,7 +304,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         self.assertEqual(validation_sql(), fresh)
 
@@ -336,7 +340,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -372,7 +376,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -395,7 +399,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [7, 8, 9, 10, 11, 12, 13, 14, 15],
+            [7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         self.assertEqual(index_sql(), fresh)
 
@@ -432,7 +436,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
         self.assertEqual(
             [migration.version for migration in applied],
-            [8, 9, 10, 11, 12, 13, 14, 15],
+            [8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         self.assertEqual(schema_sql(), fresh)
 
@@ -461,7 +465,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [11, 12, 13, 14, 15]
+            [migration.version for migration in applied], [11, 12, 13, 14, 15, 16]
         )
         self.assertEqual(trigger_sql(), fresh)
 
@@ -499,7 +503,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [12, 13, 14, 15]
+            [migration.version for migration in applied], [12, 13, 14, 15, 16]
         )
         self.assertEqual(schema_sql(), fresh)
 
@@ -614,76 +618,178 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
 
-        self.assertEqual([migration.version for migration in applied], [13, 14, 15])
+        self.assertEqual(
+            [migration.version for migration in applied], [13, 14, 15, 16]
+        )
         self.assertEqual(schema_sql(), fresh)
 
-    def test_fresh_v14_inferred_transfer_schema_matches_migration(self) -> None:
-        connection = self.create_current()
-        self.addCleanup(connection.close)
+    V16_OBJECTS = (
+        "transfer_links",
+        "transfer_links_valid_insert",
+        "transfer_links_valid_update",
+        "fx_conversions",
+        "fx_conversions_valid_insert",
+        "fx_conversions_valid_update",
+        "idx_fx_conversions_account_date",
+        "dividend_events",
+        "dividend_events_valid_insert",
+        "dividend_events_valid_update",
+        "uq_dividend_events_entitlement",
+        "ledger_log",
+        "idx_ledger_log_kind_time",
+        "canonical_events_transfer_identity_update",
+        "canonical_events_fx_conversion_identity_update",
+        "canonical_events_dividend_identity_update",
+    )
 
-        names = (
-            "inferred_transfer_links",
-            "inferred_transfer_links_valid_insert",
-            "inferred_transfer_links_valid_update",
-            "canonical_events_inferred_transfer_identity_update",
-            "balances_inferred_transfer_identity_update",
-        )
-
-        def schema_sql() -> dict[str, str]:
-            placeholders = ",".join("?" for _ in names)
-            return {
-                f"{kind}:{name}": " ".join(str(sql).split())
-                for kind, name, sql in connection.execute(
-                    f"""SELECT type,name,sql FROM sqlite_master
-                         WHERE name IN ({placeholders})""",
-                    names,
-                )
-            }
-
-        fresh = schema_sql()
-        connection.execute("DROP TABLE inferred_transfer_links")
-        connection.execute("DELETE FROM schema_migrations WHERE version>=14")
+    def rewind_to_v15(self, connection: sqlite3.Connection) -> None:
+        for trigger in (
+            "canonical_events_transfer_identity_update",
+            "canonical_events_fx_conversion_identity_update",
+            "canonical_events_dividend_identity_update",
+        ):
+            connection.execute(f"DROP TRIGGER {trigger}")
+        for table in ("transfer_links", "fx_conversions", "dividend_events", "ledger_log"):
+            connection.execute(f"DROP TABLE {table}")
+        _migration_14_inferred_account_transfers(connection)
+        _migration_15_funding_fx_links(connection)
+        connection.execute("DELETE FROM schema_migrations WHERE version=16")
         connection.commit()
 
-        applied = apply_migrations(connection)
+    def v16_schema_sql(self, connection: sqlite3.Connection) -> dict[str, str]:
+        placeholders = ",".join("?" for _ in self.V16_OBJECTS)
+        return {
+            f"{kind}:{name}": " ".join(str(sql).split())
+            for kind, name, sql in connection.execute(
+                f"""SELECT type,name,sql FROM sqlite_master
+                     WHERE name IN ({placeholders})""",
+                self.V16_OBJECTS,
+            )
+        }
 
-        self.assertEqual([migration.version for migration in applied], [14, 15])
-        self.assertEqual(schema_sql(), fresh)
-
-    def test_fresh_v15_funding_fx_schema_matches_migration(self) -> None:
+    def test_fresh_v16_ledger_engine_schema_matches_migration(self) -> None:
         connection = self.create_current()
         self.addCleanup(connection.close)
+        fresh = self.v16_schema_sql(connection)
+        self.assertEqual(len(fresh), len(self.V16_OBJECTS))
 
-        names = (
-            "funding_fx_links",
-            "funding_fx_links_valid_insert",
-            "funding_fx_links_valid_update",
-            "canonical_events_funding_fx_identity_update",
+        self.rewind_to_v15(connection)
+        applied = apply_migrations(connection)
+
+        self.assertEqual([migration.version for migration in applied], [16])
+        self.assertEqual(self.v16_schema_sql(connection), fresh)
+        retired = connection.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+                WHERE name LIKE '%funding_fx%' OR name LIKE '%inferred_transfer%'"""
+        ).fetchone()[0]
+        self.assertEqual(retired, 0)
+
+    def test_v16_moves_funding_fx_links_into_ledger_relationships(self) -> None:
+        connection = self.create_current()
+        self.addCleanup(connection.close)
+        self.rewind_to_v15(connection)
+
+        def insert(sql: str, params: tuple = ()) -> int:
+            return int(connection.execute(sql + " RETURNING id", params).fetchone()[0])
+
+        bank = insert(
+            """INSERT INTO accounts(name,kind,institution,currency)
+               VALUES ('Checking','checking','Bank','ILS')"""
+        )
+        broker = insert(
+            """INSERT INTO accounts(name,kind,institution,currency)
+               VALUES ('Broker','brokerage','Broker','USD')"""
+        )
+        document = insert(
+            """INSERT INTO documents(drive_id,drive_path,filename,doc_type,doc_date)
+               VALUES ('fx','fx-conversions/2026/a.png','a.png','fx_conversion','2026-01-06')"""
+        )
+        bank_feed = insert(
+            """INSERT INTO account_feeds(account_id,provider,feed_type)
+               VALUES (?,'document-ledger','document')""",
+            (bank,),
+        )
+        broker_feed = insert(
+            """INSERT INTO account_feeds(account_id,provider,feed_type)
+               VALUES (?,'document-ledger','document')""",
+            (broker,),
         )
 
-        def schema_sql() -> dict[str, str]:
-            placeholders = ",".join("?" for _ in names)
-            return {
-                f"{kind}:{name}": " ".join(str(sql).split())
-                for kind, name, sql in connection.execute(
-                    f"""SELECT type,name,sql FROM sqlite_master
-                         WHERE name IN ({placeholders})""",
-                    names,
+        def event(account: int, day: str, amount: int, currency: str, flow: str,
+                  category: str, feed: int | None, key: str | None) -> int:
+            event_id = insert(
+                """INSERT INTO canonical_events(
+                       account_id,event_type,occurred_on,currency,amount_minor,
+                       flow_type,category,component,status
+                   ) VALUES (?,'cash',?,?,?,?,?,?,'confirmed')""",
+                (
+                    account, day, currency, amount, flow, category,
+                    None if account == bank else f"cash_{currency.lower()}",
+                ),
+            )
+            if feed is not None:
+                source = insert(
+                    """INSERT INTO source_events(
+                           account_feed_id,source_key,event_type,occurred_on,source_doc_id
+                       ) VALUES (?,?,'cash',?,?)""",
+                    (feed, key, day, document),
                 )
-            }
+                connection.execute(
+                    """INSERT INTO event_evidence(
+                           canonical_event_id,source_event_id,evidence_role,match_method
+                       ) VALUES (?,?,'primary','document-row')""",
+                    (event_id, source),
+                )
+            return event_id
 
-        fresh = schema_sql()
+        outflow = event(bank, "2026-01-05", -600000, "ILS", "transfer", "transfer", bank_feed, "b")
+        inflow = event(broker, "2026-01-05", 600000, "ILS", "transfer", "deposit", None, None)
+        sell = event(broker, "2026-01-06", -600000, "ILS", "investment", "fx", broker_feed, "s")
+        buy = event(broker, "2026-01-06", 200000, "USD", "investment", "fx", broker_feed, "d")
         connection.execute(
-            "DROP TRIGGER canonical_events_funding_fx_identity_update"
+            """INSERT INTO funding_fx_links(
+                   bank_outflow_event_id,brokerage_inflow_event_id,
+                   fx_source_event_id,fx_destination_event_id,match_method
+               ) VALUES (?,?,?,?,'reviewed')""",
+            (outflow, inflow, sell, buy),
         )
-        connection.execute("DROP TABLE funding_fx_links")
-        connection.execute("DELETE FROM schema_migrations WHERE version=15")
+        connection.executemany(
+            """INSERT INTO fx_rates(date,base_currency,quote_currency,rate,source)
+               VALUES (?,?,?,?,?)""",
+            [
+                ("2026-01-06", "USD", "ILS", 3.0, "document"),
+                ("2026-01-05", "USD", "ILS", 2.95, "yahoo"),
+            ],
+        )
         connection.commit()
 
         applied = apply_migrations(connection)
 
-        self.assertEqual([migration.version for migration in applied], [15])
-        self.assertEqual(schema_sql(), fresh)
+        self.assertEqual([migration.version for migration in applied], [16])
+        self.assertEqual(
+            connection.execute(
+                "SELECT outflow_event_id,inflow_event_id FROM transfer_links"
+            ).fetchall(),
+            [(outflow, inflow)],
+        )
+        self.assertEqual(
+            connection.execute(
+                """SELECT account_id,converted_on,sell_event_id,buy_event_id,
+                          base_currency,quote_currency,actual_rate,market_rate
+                     FROM fx_conversions"""
+            ).fetchall(),
+            [(broker, "2026-01-06", sell, buy, "USD", "ILS", 3.0, None)],
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT date,source FROM fx_rates ORDER BY date"
+            ).fetchall(),
+            [("2026-01-05", "yahoo")],
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            connection.execute(
+                "UPDATE canonical_events SET amount_minor=1 WHERE id=?", (buy,)
+            )
 
     def test_v12_distribution_refresh_status_is_validated(self) -> None:
         connection = self.create_current()
@@ -763,7 +869,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
         self.assertEqual(
-            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15]
+            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15, 16]
         )
         self.assertEqual(guard_sql(), fresh)
 
@@ -854,7 +960,7 @@ class SchemaMigrationTests(unittest.TestCase):
         applied = apply_migrations(connection)
 
         self.assertEqual(
-            [migration.version for migration in applied], [10, 11, 12, 13, 14, 15]
+            [migration.version for migration in applied], [10, 11, 12, 13, 14, 15, 16]
         )
         self.assertEqual(validation_sql(), fresh)
 
@@ -1328,7 +1434,7 @@ class SchemaMigrationTests(unittest.TestCase):
 
         applied = apply_migrations(connection)
         self.assertEqual(
-            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15]
+            [migration.version for migration in applied], [9, 10, 11, 12, 13, 14, 15, 16]
         )
         feeds = connection.execute(
             """SELECT DISTINCT feed.account_id,feed.provider,feed.feed_type

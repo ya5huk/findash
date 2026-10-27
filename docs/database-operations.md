@@ -1,9 +1,14 @@
 # Database operations
 
-Skills never invoke the SQLite CLI or assemble shell-escaped SQL. All normal reads and
-writes go through `scripts/findash_db.py`, which fixes the database path, enables foreign
-keys, applies migrations before writes, bounds query output, and commits a write batch
-atomically.
+Skills never invoke the SQLite CLI or assemble shell-escaped SQL. All reads and
+writes go through `scripts/findash_db.py`, which fixes the database path, enables
+foreign keys, applies migrations before writes, bounds query output, and commits a
+write request atomically.
+
+**Claude interprets; the ledger engine does the bookkeeping.** Every write is a
+typed *intent* that holds only the facts Claude read. The engine derives everything
+derivable (missing amounts, rates, market rates, cash components, counterpart legs,
+links, dedup keys, zero anchors) and writes every row the fact implies.
 
 ## Request files
 
@@ -19,41 +24,172 @@ A read request has one parameterized `SELECT` (or read-only `WITH`):
 }
 ```
 
-Run it with:
-
 ```bash
 python3 scripts/findash_db.py query inbox/staging/operations/<request>.json
 ```
 
-A write request contains an ordered list of parameterized statements:
+A write request is one list of intents, applied in order in one transaction:
 
 ```json
 {
-  "statements": [
-    {
-      "sql": "INSERT INTO documents(drive_id,drive_path,filename) VALUES(?,?,?) ON CONFLICT(drive_id) DO NOTHING",
-      "params": ["<stable-source-id>", "<source-path>", "<filename>"]
-    }
+  "intents": [
+    {"type": "document", "drive_id": "<stable-source-id>",
+     "drive_path": "<source-path>", "filename": "<filename>"},
+    {"type": "cash", "account": "<account name or id>", "date": "YYYY-MM-DD",
+     "amount": "-42.50", "currency": "ILS", "flow_type": "expense",
+     "category": "groceries",
+     "evidence": {"document": "<stable-source-id>", "row": 7}}
   ]
 }
 ```
-
-Run it with:
 
 ```bash
 python3 scripts/findash_db.py apply inbox/staging/operations/<request>.json
 ```
 
-The whole list succeeds or rolls back. Put the document/source identity before facts
-that cite it, and resolve generated ids inside later SQL with a stable-key subquery.
-The gateway accepts `INSERT`, `INSERT OR IGNORE`, and bounded `UPDATE ... WHERE`;
-use `ON CONFLICT ... DO UPDATE` instead of `REPLACE`. Schema changes and general
-destructive deletes belong only in reviewed versioned migrations. The fixed reviewed
-operations below are the only exceptions.
+The output reports per-intent outcomes (`created`, `linked`, `confirmed`,
+`updated`, `unchanged`, ...). Re-applying a request is a no-op; an intent that
+contradicts recorded facts fails the whole request. Put the `document` intent
+first so later intents can cite it by `drive_id`. There is no plain-SQL write
+path; the logged `raw_sql` intent is the only escape.
+
+## Reference intents
+
+| Intent | Required | Optional | Behaviour |
+|---|---|---|---|
+| `document` | `drive_id drive_path filename` | `doc_type doc_date raw_hash notes` | created once; a later run may refine path, type, date or notes, never the bytes (`raw_hash`) |
+| `account` | `name kind institution currency` | `external_id opened_on closed_on investment_track liquidity_date notes` | keyed by name; `kind`, `institution`, `currency` never change |
+| `feed` | `account provider feed_type` | `external_account_ref label active` | a provider account attaches to one logical account for good; moving it needs `reconcile-account` |
+| `security` | `ticker currency` | `name asset_class` | other intents create a missing security implicitly |
+| `price` | `ticker date close currency` | — | a stored close is never overwritten |
+| `meta` | `key` | `value` or `now: true` | run-journal stamps |
+| `balance` | `account as_of amount currency evidence` | `component complete prefer` | one snapshot observation (bank closing balance, pension component, ...) |
+| `position` | `account as_of ticker quantity currency evidence` | `avg_cost price value complete prefer` | one holding observation |
+| `snapshot` | `account as_of evidence` | `cash positions complete` | a whole brokerage read: `cash` = `[{currency, amount}]`, `positions` = `[{ticker, quantity, currency, avg_cost?, price?, value?}]` |
+| `payslip` | `employer period_start period_end gross net` | `paid_on currency document line_items` + the deduction/contribution amounts | keyed by period and employer |
+
+Snapshot evidence is `{"feed": "<provider>", "key": "<key>"}` or
+`{"document": "<drive_id>"}` (optional `row`, and `feed` when the document came
+through one). A `snapshot` derives each observation's key from that prefix:
+`<key>:cash:<CCY>` and `<key>:pos:<ticker>`.
+
+- **One anchor per identity.** A second source that agrees becomes corroborating
+  evidence (`linked`); one that disagrees is rejected. Decide which source is right
+  and re-send the one to keep with `prefer: true` (`replaced`). Never sum two
+  snapshots.
+- **`complete: true`** asserts the read covered every holding and every cash
+  currency. On a `snapshot`, the engine also writes zero anchors for previously
+  held securities and previously non-zero cash currencies the read omitted —
+  limited to what the same feed has reported before, so an API never zeroes a
+  wallet only the wrapper's statements can see. Partial reads never close anything.
+- **Payslip amounts** are `gross`, `net`, `income_tax`, `social_security`,
+  `health_insurance`, `pension_employee`, `pension_employer`,
+  `study_fund_employee`, `study_fund_employer` (major units; currency default
+  ILS). `line_items` = `[{label, amount, kind}]` with kind `earning`, `deduction`
+  or `info`. Re-sending may only add `paid_on` or the document; any other
+  difference is rejected.
+
+## Money intents
+
+Every intent names accounts by id or exact name, writes amounts as major-unit
+decimals in the stated currency (extra precision is an error), and cites evidence.
+
+**Evidence** is one of:
+
+| Form | Meaning |
+|---|---|
+| `{"document": "<drive_id>", "row": "<stable row key>"}` | a document row; optional `"feed"` names the provider feed (default `document-ledger`) |
+| `{"feed": "<provider>", "key": "<provider id>"}` | a live feed observation; optional `"document"` adds the staged document |
+| `{"transaction": <id>}` | adopt an existing raw transaction that has no event yet |
+| `{"event": <id>}` | an already-normalized canonical event |
+
+The evidence key is the idempotency key: the same evidence never creates a second
+event. When the user tells you a fact directly (no document), use
+`"confirmed_by": "<plain reason>"` where an intent allows it.
+
+| Intent | Required | Optional | Engine derives |
+|---|---|---|---|
+| `cash` | `account date amount currency flow_type evidence` | `category component description counterparty reference value_date status notes same_as_event` | raw row, source identity, canonical event; brokerage `cash_<ccy>` component |
+| `transfer` | `date amount currency from to` | `description counterparty reference` | both legs and their `transfer_links` row |
+| `fx_conversion` | `account date sell buy` | `settled_on rate evidence confirmed_by description` | the missing third value, both legs, market rate, `fx_conversions` row |
+| `trade` | `account date ticker side shares price currency evidence` | `fees external_id same_as_event status` | security (if new), raw trade, canonical trade |
+| `trade_settlement` | `cash_event trade_events` | — | validated `trade_cash_links` |
+| `dividend` | `account ticker date currency evidence` | `ex_date gross withholding net description` | net amount; settles a matching expected dividend |
+| `confirm` | `event` | `date amount evidence note` | status `confirmed`, evidence row |
+| `exclude` | `event reason` | — | excludes the event and anything that only existed because of its link |
+| `raw_sql` | `reason statements` | — | logged escape hatch (below) |
+
+Notes per intent:
+
+- **`cash`** — `same_as_event` attaches a second feed's observation to an existing
+  event (a list means one aggregate statement row covering several events).
+  `status: "needs_review"` keeps an uncertain row out of calculations.
+- **`transfer`** — `from`/`to` each take `account` plus optional `evidence`, `date`
+  and `category`. A side with no evidence becomes an **expected leg**
+  (`needs_review`) that reconcile or a later intent confirms. Give
+  `confirmed_by` on the unobserved side only when other evidence already proves
+  the destination. Re-sending the transfer with new destination evidence fills the
+  expected leg instead of creating another.
+- **`fx_conversion`** — `sell`/`buy` take `currency` plus optional `amount` and
+  `evidence`; give two of sell amount, buy amount and `rate`, or all three if they
+  agree. `rate` is quoted the way people read it: reporting currency per foreign
+  unit (ILS per USD) in either direction. `date` is the conversion date (market
+  rate date); `settled_on` is when the bought cash lands. The user's rate is stored
+  beside the market rate; neither goes into `fx_rates`.
+- **`trade`** — commission may carry either sign; it is stored as a cost.
+  Currency comes from the security, not the provider's trade row.
+- **`dividend`** — give what the source shows: `net`, or `gross` with
+  `withholding`. With an open expected dividend for the same security, document or
+  feed evidence settles it at the observed amount.
+
+## Escape hatch
+
+When no intent fits, use a `raw_sql` intent with a written reason:
+
+```json
+{"type": "raw_sql", "reason": "plain-language reason, no financial values",
+ "statements": [{"sql": "UPDATE ... WHERE ...", "params": []}]}
+```
+
+Statements must be a single `INSERT`, `INSERT OR IGNORE` or bounded
+`UPDATE ... WHERE` each (no `REPLACE`, schema changes or deletes), may touch any
+table, and are recorded in `ledger_log`. Reconcile and the doctor report every use from the last 14 days.
+Prefer adding a typed intent over repeating an escape.
+
+## Daily reconcile
+
+```bash
+python3 scripts/findash_db.py reconcile [--today YYYY-MM-DD] [--dry-run]
+```
+
+1. Fills missing market rates on recorded conversions.
+2. Expects dividends: for each Yahoo ex-date in the last 45 days where a brokerage
+   held shares, net = shares × per-share × (1 − withholding learned from that
+   account's history, default 25%).
+3. Measures **unexplained brokerage cash**: per cash currency, the change between
+   consecutive snapshots minus every recorded movement between them.
+4. Auto-confirms a residual only when exactly one explanation fits: an expected
+   transfer in the same currency; an expected transfer in another currency whose
+   implied rate is within the FX band (1% better to 2.5% worse than market), which
+   also records the conversion; or expected dividend(s) within 2%.
+5. Prints the remaining open items as JSON.
+
+| Open item | Meaning | Close it with |
+|---|---|---|
+| `expected_leg` | transfer counterpart not yet observed | `transfer` with the side's evidence, or `exclude` |
+| `unexplained_cash` | snapshot change no event explains | the intent for what it was (`dividend`, `cash` interest/fee, `transfer`, ...) |
+| `stale_review` | `needs_review` event older than 14 days | `confirm` or `exclude` |
+| `dividend_overdue` | expected dividend 45 days past ex-date | `dividend`, or `exclude` if not paid |
+| `fx_rate_outside_band` | user's rate far from market | check the date/amounts; correct with `exclude` + a new intent |
+| `missing_market_rate` | no market close near the conversion date | backfill prices; reconcile fills it |
+| `raw_sql_used` | escape hatch used recently | add a typed intent for that case |
+
+Items with `escalate: true` (older than 7 days, or any raw SQL) are what the user
+should hear about.
 
 ## Reviewed duplicate-account reconciliation
 
-The first exception is a fixed reconciliation operation. It is not free-form SQL and
+This is a fixed, reviewed operation. It is not free-form SQL and
 does not enable `DELETE` in normal write batches. Use it only after a human has
 confirmed that the source and target rows are the same economic account and every
 overlap has been reviewed.
@@ -140,85 +276,6 @@ python3 scripts/findash_db.py remove-incorrect-balance inbox/staging/operations/
 The command verifies every guard inside one immediate transaction, preserves the
 source documents, validates the resulting schema and relationships, and emits only
 aggregate counts. It does not enable `DELETE` in normal write batches.
-
-## Reviewed inferred brokerage funding
-
-Use the third fixed operation only after two complete per-currency brokerage cash
-snapshots from the same active feed reveal a positive residual, and confirmed
-bank-side transfers uniquely explain that entire residual. Private recipient and
-reference evidence must identify the brokerage. Amount/date similarity alone is not
-enough.
-
-```json
-{
-  "operation": "infer_brokerage_funding",
-  "outflow_event_ids": [0],
-  "brokerage_account_id": 0,
-  "before_balance_id": 0,
-  "after_balance_id": 0,
-  "confirmed_bank_destination": true,
-  "confirmed_no_competing_cash_explanation": true,
-  "confirmed_complete_snapshot_pair": true
-}
-```
-
-Replace every `0` with a privately reviewed local id. Several bank outflows may
-share one snapshot interval; list all of them only when their sum is the full
-residual. Run:
-
-```bash
-python3 scripts/findash_db.py infer-brokerage-funding inbox/staging/operations/<request>.json
-```
-
-The operation requires confirmed negative transfer events with source evidence,
-same-currency complete brokerage cash anchors from one active feed, chronological
-containment, and an exact residual after confirmed cash events and trade settlements
-(apart from the existing fractional-trade minor-unit tolerance). It atomically
-creates equal positive brokerage transfers and durable `inferred_transfer_links`.
-Re-running the same request is a no-op. A partial snapshot, unexplained remainder,
-missing bank evidence, competing destination, or already-linked transfer fails the
-whole operation.
-
-## Reviewed funding followed by FX
-
-Use this fixed operation when a reviewed owned-account bank outflow funds a
-brokerage and a complete brokerage FX document shows that the same source-currency
-cash was converted within three days. This is the evidence path for cases where
-the brokerage snapshots are partial: the bank movement proves external funding,
-while the conversion document proves both internal cash legs.
-
-```json
-{
-  "operation": "reconcile_funding_fx",
-  "bank_transaction_id": 0,
-  "fx_destination_transaction_id": 0,
-  "brokerage_account_id": 0,
-  "confirmed_same_owned_transfer": true,
-  "confirmed_complete_conversion": true
-}
-```
-
-The bank row must be an unnormalized negative transfer with source-document
-evidence. The FX destination row must be an unnormalized positive cash observation
-from a typed FX-conversion document, on the reviewed brokerage account, in another
-currency. A same-day authoritative document rate must convert it to the bank
-outflow within the fixed two-minor-unit display-rounding tolerance.
-Recipient/reference review must establish the owned brokerage relationship;
-amount/date similarity alone is insufficient.
-
-Run:
-
-```bash
-python3 scripts/findash_db.py reconcile-funding-fx inbox/staging/operations/<request>.json
-```
-
-The operation atomically records the bank outflow, equal brokerage funding inflow,
-negative source-currency FX leg, and positive destination-currency FX leg. It links
-all four in `funding_fx_links`, preserves the original raw rows and documents, and
-is idempotent. External-capital calculations count only the brokerage funding
-inflow. Brokerage cash reconstruction also applies the two FX legs, so conversion
-reduces source-currency cash and raises destination-currency cash without changing
-external funding.
 
 Always delete the request after the command finishes, whether it succeeded or failed:
 

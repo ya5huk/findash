@@ -35,13 +35,16 @@ Source of truth: [`scripts/init-db.sql`](../scripts/init-db.sql). This file expl
 | `source_events` | stable feed observation | unique by `(account_feed_id, source_key)`; `source_key` is a provider id or document + row identity |
 | `event_evidence` | source↔canonical link | source of truth for normalization: two feeds can support one event without deleting either raw row; `aggregate` supports one-to-many statement/fill matching and therefore has no raw canonical pointer |
 | `trade_cash_links` | explicit cash↔trade relationship | says one confirmed canonical cash event exactly records settlement for one or more confirmed canonical trades; each trade has at most one settlement-cash event, avoiding ambiguous partial replacement |
-| `funding_fx_links` | reviewed bank funding↔brokerage FX relationship | preserves the bank outflow, equal brokerage inflow, negative source-currency FX leg, and positive destination-currency FX leg as four distinct events; FX changes cash composition, not external capital |
+| `transfer_links` | own-account transfer | joins the outflow leg to the equal inflow leg on another account; either leg may be an expected `needs_review` leg until its cash is observed |
+| `fx_conversions` | currency conversion inside one account | joins the sold and bought cash legs and stores the user's `actual_rate` beside the day's `market_rate`; conversions change cash composition, not external capital |
+| `dividend_events` | dividend payment | ties the income cash event to its security and ex-date; carries gross/withholding when a source shows them and the expected amount when predicted |
+| `ledger_log` | ledger write | one row per intents request, reconcile run, or raw-SQL escape (reason only, never values) |
 | `positions` | (account, security, as_of) observation | as-reported checkpoint used as an anchor/reconciliation source when event history is incomplete—not a second portfolio to add |
 | `position_evidence` | source observation supporting a position | preserves overlapping wrapper/API snapshots while one `positions` row remains the chosen anchor; snapshot evidence can set `account_snapshot_complete=1` only when the same read covered every holding **and** every cash component for the account |
 | `prices` | (security, date) close | for valuation and benchmark comparison |
 | `security_distributions` | one provider distribution event for a security | cached market reference data keyed by `(security_id, source, source_key)`; the exact rational per-share amount can model entitlement but is not evidence that the account received cash |
 | `security_distribution_refreshes` | latest provider refresh outcome for one security | distinguishes a confirmed empty result from failed or never-fetched coverage; it never represents a cash event |
-| `fx_rates` | (date, base→quote) | reporting currency is ILS. `source` column: `'document'` = extracted from a Drive doc (the rate the user actually transacted at — authoritative, never overwritten by the Yahoo refresh); `'yahoo'` = filled by `scripts/refresh_prices.py`. As-of lookup compares direct and inverse observations by newest date, then document provenance, then deterministic orientation; materially inconsistent same-day document reciprocals are rejected |
+| `fx_rates` | (date, base→quote) | reporting currency is ILS. Market reference rates (`'yahoo'`, filled by `scripts/refresh_prices.py`). A conversion's own rate lives on `fx_conversions`, never here. Older `'document'` rows (card/bank statement rates) are still honoured by valuation lookups and never overwritten by the refresh |
 | `security_price_observations` | append-only provider quote observation | integer `price_minor`, timestamp, currency, and source; used only for the localhost live dashboard |
 | `fx_rate_observations` | append-only provider FX observation | timestamped positive rate used only for live valuation; it never replaces an authoritative transaction rate |
 | `payslips` | one payslip | structured columns for common bits |
@@ -61,28 +64,22 @@ accounts: Wrapper brokerage
 
 Both feeds may report the same trade. Keep both raw `trades` rows, give each a stable `source_events` identity, then link both through `event_evidence` to one `canonical_events` trade. The accounting layer counts the canonical row once. Never merge solely because amount and date match: two genuine fills can be identical. Stable provider ids win; otherwise compare security, side, quantity, price, currency, dates, fees and surrounding account state with judgment. Ambiguous matches stay `needs_review` rather than being guessed.
 
-Write each normalized observation in one transaction, in dependency order: upsert the `source_events` identity, find or create its canonical event(s), insert `event_evidence`, then insert or update the raw `transactions`/`trades` row. A non-null raw `canonical_event_id` is only a one-to-one convenience pointer: its source must have exactly one evidence link, which must be non-aggregate and target that same canonical row. For aggregate evidence, leave the raw pointer null. Never commit a raw pointer and repair its evidence in a later batch.
+The ledger engine (`scripts/findash_core/ledger/`) writes each normalized observation in one transaction, in dependency order: the `source_events` identity, the canonical event(s), `event_evidence`, then the raw `transactions`/`trades` row. Skills describe the observation as an intent ([database-operations.md](./database-operations.md)) and never write these tables directly. A non-null raw `canonical_event_id` is only a one-to-one convenience pointer: its source has exactly one evidence link, which is non-aggregate and targets that same canonical row; aggregate evidence leaves the pointer null.
 
 A trade changes both holdings and brokerage cash. When no posted cash observation exists, accounting derives that cash leg from the confirmed canonical trade. When a feed separately reports the posted settlement cash, retain it as a confirmed canonical cash event and add `trade_cash_links` rows to every canonical fill it covers. One cash event can deliberately cover several fills, but one trade cannot be split across several canonical cash events: aggregate split source rows into one reviewed canonical settlement or leave them unlinked until their economics are unambiguous.
 
-An owned-account bank outflow may also prove a missing brokerage funding leg.
-`inferred_transfer_links` joins the confirmed negative bank transfer, its equal and
-opposite positive brokerage transfer, and the complete before/after per-currency
-cash snapshots used to reconcile the interval. Both snapshots must come from the
-same active feed and be marked complete. The fixed gateway operation recomputes all
-known cash and trade movements before it permits the link; ordinary ingestion must
-not insert an unproven balancing event.
+Movements that span several canonical events are joined by one explicit link.
+`transfer_links` pairs an own-account outflow with its equal inflow; the side not
+yet observed is an *expected leg* (`needs_review`) and does not count until
+confirmed by evidence or by the daily reconcile. `fx_conversions` pairs the sold
+and bought legs inside one account and keeps the user's rate beside the market
+rate, so the broker's markup stays measurable. External capital counts only the
+brokerage transfer legs; conversions change which currency is held.
+`dividend_events` ties a dividend's cash to its security and ex-date, which lets
+reconcile predict a payment and confirm it when the cash appears. Linked economics
+are immutable; an expected leg may still be re-dated and confirmed.
 
-When complete brokerage snapshots are unavailable, a complete FX-conversion
-document can provide a separate reviewed proof path. `funding_fx_links` joins the
-confirmed bank outflow, its equal positive brokerage funding inflow, and the two
-same-document internal FX cash legs. The operation requires reviewed owned-account
-recipient evidence, exact source-currency economics, an authoritative document
-rate, and a zero-to-three-day sequence. The external inflow changes contributed
-capital; the negative and positive FX legs only change the currencies held inside
-the brokerage.
-
-The link is an exact reviewed assertion. Cash and trades must share account and currency, be confirmed, and the cash date must be on or after every covered trade date. Its signed amount must equal the linked fills' economics—buy `= -(quantity × price_minor) - fees_minor`, sell `= quantity × price_minor - fees_minor`—within `max(1, number of fills)` minor units for fractional-fill rounding. Amount/date similarity alone never creates a link. Once linked, the events' dates, amounts, security, side, quantity, price, fees, currency, component, status, and other accounting identity are immutable; notes may still be edited. A correction requires explicit review rather than changing facts underneath the link. An unlinked cash event remains a separate movement. A linked trade stays derived before the posted cash date; from that date onward the explicit cash replaces it, so later evidence never rewrites earlier history.
+The trade-cash link is an exact reviewed assertion. Cash and trades must share account and currency, be confirmed, and the cash date must be on or after every covered trade date. Its signed amount must equal the linked fills' economics—buy `= -(quantity × price_minor) - fees_minor`, sell `= quantity × price_minor - fees_minor`—within `max(1, number of fills)` minor units for fractional-fill rounding. Amount/date similarity alone never creates a link. Once linked, the events' dates, amounts, security, side, quantity, price, fees, currency, component, status, and other accounting identity are immutable; notes may still be edited. A correction requires explicit review rather than changing facts underneath the link. An unlinked cash event remains a separate movement. A linked trade stays derived before the posted cash date; from that date onward the explicit cash replaces it, so later evidence never rewrites earlier history.
 
 The same principle applies to snapshots. `balances` and `positions` hold chosen anchors; `balance_evidence` and `position_evidence` retain every source observation. A second feed is corroboration or a reconciliation conflict, not another asset.
 
@@ -121,7 +118,7 @@ A Harel pension PDF generally produces:
 
 ## Worked example: a bank statement (XLSX)
 
-Each row in the bank's transactions table becomes one row in `transactions`. Use judgment for `category`:
+Each row in the bank's transactions table becomes one intent (usually `cash`; a movement between owned accounts is a `transfer`). Use judgment for `category`:
 
 - `salary` when description says משכורת / payroll
 - `transfer` when both sides are accounts you own (Hapoalim → the brokerage account is a transfer, *not* an expense)
@@ -164,11 +161,9 @@ WHERE account_id=<brokerage_account_id>
 ORDER BY occurred_on;
 ```
 
-The final example is intentionally account-local. Strongly proven inferred funding
-has an explicit cross-account `inferred_transfer_links` relationship; ordinary
-transfers without that evidence remain separate account-local events. Application
-code therefore continues to use normalized signed external flows for performance
-calculations.
+The final example is intentionally account-local. The cross-account relationship
+lives in `transfer_links`; application code uses normalized signed external flows
+for performance calculations.
 
 ## Schema lifecycle
 
@@ -210,3 +205,9 @@ and snapshot identities become immutable.
 Migration v15 adds guarded `funding_fx_links` for a reviewed bank transfer followed
 by a complete documented brokerage conversion. It keeps external funding separate
 from the two internal FX cash legs and makes all linked economics immutable.
+
+Migration v16 introduces the ledger-engine relationships: `transfer_links`,
+`fx_conversions`, `dividend_events` and `ledger_log`. Existing v14/v15 links move
+into `transfer_links` and `fx_conversions` (a conversion document's rate becomes the
+conversion's `actual_rate` and leaves `fx_rates`), then the v14/v15 tables are
+dropped. Older databases still replay v14 and v15 first.

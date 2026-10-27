@@ -27,4 +27,22 @@
 - A fund movement report is more authoritative than payroll. Once an exact
   post-snapshot contribution is recorded, older payslip estimates covered by that
   movement history are not added again; only newer payslips continue the estimate.
-- **Payment reconciliation:** capture `paid_on` whenever the document states it. A payslip and salary credit are treated as the same net payment only when `paid_on`, native currency, and exact native net amount all match one-to-one. A period boundary substituted for a missing payment date never proves a match, and near amounts/dates are not guessed.
+- **Payment reconciliation — `paid_on` is when the net pay reached the bank.**
+  It is not the slip's printed pay date. The two often differ: weekends, bank
+  processing, or a slip issued before or after the transfer. Cash flow counts a
+  payslip and a salary credit as one payment only when `paid_on`, native currency
+  and exact native net amount all equal that credit's. A missing or printed-only
+  date therefore counts the same pay twice. The code's match stays exact, so pair
+  them with judgment at ingest:
+  - **Credit already in the ledger:** find salary credits on an owned account with
+    the exact native net amount and currency, posted after the pay period starts,
+    and not already paired with another payslip. With exactly one such candidate,
+    set `paid_on` to its posting date. Keep the printed pay date, if any, in
+    `documents.notes`.
+  - **Slip arrives before the money:** store the printed pay date (or NULL) and
+    note that pairing is pending. The salary credit's ingest completes it; see
+    "Salary credits" in [classification.md](./classification.md#judgment-calls).
+  - **Several candidates, or no exact net match** (split payment, correction,
+    second employer): do not guess. Leave `paid_on` unpaired and flag the slip
+    for review in `documents.notes`. Never adjust an amount or create a credit to
+    force a match.

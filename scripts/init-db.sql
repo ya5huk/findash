@@ -376,347 +376,268 @@ BEGIN
   SELECT RAISE(ABORT, 'linked canonical event economics are immutable');
 END;
 
--- A brokerage funding event may be inferred only when a confirmed bank outflow
--- exactly explains the residual between two complete cash snapshots from the
--- same active brokerage feed. The link retains every fact used by that judgment.
-CREATE TABLE inferred_transfer_links (
-  outflow_event_id  INTEGER PRIMARY KEY
-                      REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  inflow_event_id   INTEGER NOT NULL UNIQUE
-                      REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  before_balance_id INTEGER NOT NULL
-                      REFERENCES balances(id) ON DELETE RESTRICT,
-  after_balance_id  INTEGER NOT NULL
-                      REFERENCES balances(id) ON DELETE RESTRICT,
-  match_method      TEXT NOT NULL CHECK (length(trim(match_method)) > 0),
-  created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CHECK (before_balance_id <> after_balance_id)
+-- Ledger relationships (v16). Each economic movement that spans several
+-- canonical events gets one explicit link: own-account transfers, FX
+-- conversions (with the user's actual rate and the day's market rate), and
+-- dividends (with the security and entitlement they came from). Linked
+-- economics are immutable; expected legs may still be dated and confirmed.
+CREATE TABLE transfer_links (
+    outflow_event_id  INTEGER PRIMARY KEY
+                        REFERENCES canonical_events(id) ON DELETE RESTRICT,
+    inflow_event_id   INTEGER NOT NULL UNIQUE
+                        REFERENCES canonical_events(id) ON DELETE RESTRICT,
+    match_method      TEXT NOT NULL CHECK (length(trim(match_method)) > 0),
+    created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (outflow_event_id <> inflow_event_id)
 );
-CREATE TRIGGER inferred_transfer_links_valid_insert
-BEFORE INSERT ON inferred_transfer_links
-WHEN NOT (EXISTS (
-  SELECT 1
-    FROM canonical_events AS outflow
-    JOIN canonical_events AS inflow ON inflow.id=NEW.inflow_event_id
-    JOIN accounts AS source_account ON source_account.id=outflow.account_id
-    JOIN accounts AS destination_account ON destination_account.id=inflow.account_id
-    JOIN balances AS before_balance ON before_balance.id=NEW.before_balance_id
-    JOIN balances AS after_balance ON after_balance.id=NEW.after_balance_id
-   WHERE outflow.id=NEW.outflow_event_id
-     AND outflow.event_type='cash'
-     AND outflow.flow_type='transfer'
-     AND outflow.status='confirmed'
-     AND outflow.amount_minor<0
-     AND EXISTS (
-       SELECT 1 FROM event_evidence AS source_evidence
-        WHERE source_evidence.canonical_event_id=outflow.id
-     )
-     AND inflow.event_type='cash'
-     AND inflow.flow_type='transfer'
-     AND inflow.status='confirmed'
-     AND inflow.amount_minor>0
-     AND inflow.amount_minor=-outflow.amount_minor
-     AND inflow.currency=outflow.currency
-     AND inflow.occurred_on=outflow.occurred_on
-     AND source_account.id<>destination_account.id
-     AND source_account.kind<>'brokerage'
-     AND destination_account.kind='brokerage'
-     AND before_balance.account_id=inflow.account_id
-     AND after_balance.account_id=inflow.account_id
-     AND before_balance.currency=inflow.currency
-     AND after_balance.currency=inflow.currency
-     AND before_balance.component='cash_' || lower(inflow.currency)
-     AND after_balance.component=before_balance.component
-     AND before_balance.as_of<inflow.occurred_on
-     AND inflow.occurred_on<=after_balance.as_of
-     AND EXISTS (
-       SELECT 1
-         FROM balance_evidence AS before_evidence
-         JOIN balance_evidence AS after_evidence
-           ON after_evidence.account_feed_id=before_evidence.account_feed_id
-         JOIN account_feeds AS feed ON feed.id=before_evidence.account_feed_id
-        WHERE before_evidence.canonical_balance_id=before_balance.id
-          AND after_evidence.canonical_balance_id=after_balance.id
-          AND before_evidence.account_snapshot_complete=1
-          AND after_evidence.account_snapshot_complete=1
-          AND feed.account_id=inflow.account_id
-          AND feed.is_active=1
-     )
-))
-BEGIN
-  SELECT RAISE(ABORT, 'invalid inferred transfer link');
-END;
-CREATE TRIGGER inferred_transfer_links_valid_update
-BEFORE UPDATE OF outflow_event_id, inflow_event_id, before_balance_id,
-  after_balance_id, match_method
-ON inferred_transfer_links
-WHEN NOT (EXISTS (
-  SELECT 1
-    FROM canonical_events AS outflow
-    JOIN canonical_events AS inflow ON inflow.id=NEW.inflow_event_id
-    JOIN accounts AS source_account ON source_account.id=outflow.account_id
-    JOIN accounts AS destination_account ON destination_account.id=inflow.account_id
-    JOIN balances AS before_balance ON before_balance.id=NEW.before_balance_id
-    JOIN balances AS after_balance ON after_balance.id=NEW.after_balance_id
-   WHERE outflow.id=NEW.outflow_event_id
-     AND outflow.event_type='cash'
-     AND outflow.flow_type='transfer'
-     AND outflow.status='confirmed'
-     AND outflow.amount_minor<0
-     AND EXISTS (
-       SELECT 1 FROM event_evidence AS source_evidence
-        WHERE source_evidence.canonical_event_id=outflow.id
-     )
-     AND inflow.event_type='cash'
-     AND inflow.flow_type='transfer'
-     AND inflow.status='confirmed'
-     AND inflow.amount_minor>0
-     AND inflow.amount_minor=-outflow.amount_minor
-     AND inflow.currency=outflow.currency
-     AND inflow.occurred_on=outflow.occurred_on
-     AND source_account.id<>destination_account.id
-     AND source_account.kind<>'brokerage'
-     AND destination_account.kind='brokerage'
-     AND before_balance.account_id=inflow.account_id
-     AND after_balance.account_id=inflow.account_id
-     AND before_balance.currency=inflow.currency
-     AND after_balance.currency=inflow.currency
-     AND before_balance.component='cash_' || lower(inflow.currency)
-     AND after_balance.component=before_balance.component
-     AND before_balance.as_of<inflow.occurred_on
-     AND inflow.occurred_on<=after_balance.as_of
-     AND EXISTS (
-       SELECT 1
-         FROM balance_evidence AS before_evidence
-         JOIN balance_evidence AS after_evidence
-           ON after_evidence.account_feed_id=before_evidence.account_feed_id
-         JOIN account_feeds AS feed ON feed.id=before_evidence.account_feed_id
-        WHERE before_evidence.canonical_balance_id=before_balance.id
-          AND after_evidence.canonical_balance_id=after_balance.id
-          AND before_evidence.account_snapshot_complete=1
-          AND after_evidence.account_snapshot_complete=1
-          AND feed.account_id=inflow.account_id
-          AND feed.is_active=1
-     )
-))
-BEGIN
-  SELECT RAISE(ABORT, 'invalid inferred transfer link');
-END;
-CREATE TRIGGER canonical_events_inferred_transfer_identity_update
-BEFORE UPDATE OF account_id,event_type,occurred_on,currency,
-  amount_minor,flow_type,component,status
-ON canonical_events
-WHEN (
-  NEW.account_id IS NOT OLD.account_id
-  OR NEW.event_type IS NOT OLD.event_type
-  OR NEW.occurred_on IS NOT OLD.occurred_on
-  OR NEW.currency IS NOT OLD.currency
-  OR NEW.amount_minor IS NOT OLD.amount_minor
-  OR NEW.flow_type IS NOT OLD.flow_type
-  OR NEW.component IS NOT OLD.component
-  OR NEW.status IS NOT OLD.status
-) AND EXISTS (
-  SELECT 1 FROM inferred_transfer_links
-   WHERE outflow_event_id=OLD.id OR inflow_event_id=OLD.id
-)
-BEGIN
-  SELECT RAISE(ABORT, 'linked inferred transfer is immutable');
-END;
-CREATE TRIGGER balances_inferred_transfer_identity_update
-BEFORE UPDATE OF account_id,as_of,component,amount_minor,currency
-ON balances
-WHEN (
-  NEW.account_id IS NOT OLD.account_id
-  OR NEW.as_of IS NOT OLD.as_of
-  OR NEW.component IS NOT OLD.component
-  OR NEW.amount_minor IS NOT OLD.amount_minor
-  OR NEW.currency IS NOT OLD.currency
-) AND EXISTS (
-  SELECT 1 FROM inferred_transfer_links
-   WHERE before_balance_id=OLD.id OR after_balance_id=OLD.id
-)
-BEGIN
-  SELECT RAISE(ABORT, 'inferred transfer snapshot is immutable');
-END;
-
--- A reviewed bank transfer may also be proven by a complete internal FX
--- conversion: external ILS enters the brokerage, then the same ILS is debited
--- and a foreign-currency cash leg is credited. The four events stay distinct.
-CREATE TABLE funding_fx_links (
-  bank_outflow_event_id       INTEGER PRIMARY KEY
-                                  REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  brokerage_inflow_event_id   INTEGER NOT NULL UNIQUE
-                                  REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  fx_source_event_id          INTEGER NOT NULL UNIQUE
-                                  REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  fx_destination_event_id     INTEGER NOT NULL UNIQUE
-                                  REFERENCES canonical_events(id) ON DELETE RESTRICT,
-  match_method                TEXT NOT NULL CHECK (length(trim(match_method)) > 0),
-  created_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE fx_conversions (
+    id                INTEGER PRIMARY KEY,
+    account_id        INTEGER NOT NULL
+                        REFERENCES accounts(id) ON DELETE RESTRICT,
+    converted_on      TEXT NOT NULL,
+    sell_event_id     INTEGER NOT NULL UNIQUE
+                        REFERENCES canonical_events(id) ON DELETE RESTRICT,
+    buy_event_id      INTEGER NOT NULL UNIQUE
+                        REFERENCES canonical_events(id) ON DELETE RESTRICT,
+    base_currency     TEXT NOT NULL,
+    quote_currency    TEXT NOT NULL,
+    actual_rate       REAL NOT NULL CHECK (actual_rate > 0 AND actual_rate < 1e999),
+    market_rate       REAL CHECK (market_rate IS NULL
+                                  OR (market_rate > 0 AND market_rate < 1e999)),
+    market_rate_date  TEXT,
+    match_method      TEXT NOT NULL CHECK (length(trim(match_method)) > 0),
+    created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (base_currency GLOB '[A-Z][A-Z][A-Z]'),
+    CHECK (quote_currency GLOB '[A-Z][A-Z][A-Z]'),
+    CHECK (base_currency <> quote_currency),
+    CHECK (typeof(converted_on)='text' AND length(converted_on)=10 AND converted_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(converted_on)=converted_on),
+    CHECK (market_rate_date IS NULL OR (typeof(market_rate_date)='text' AND length(market_rate_date)=10 AND market_rate_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(market_rate_date)=market_rate_date)),
+    CHECK ((market_rate IS NULL) = (market_rate_date IS NULL)),
+    CHECK (market_rate_date IS NULL OR market_rate_date <= converted_on)
 );
-CREATE TRIGGER funding_fx_links_valid_insert
-BEFORE INSERT ON funding_fx_links
-WHEN NOT (EXISTS (
-  SELECT 1
-    FROM canonical_events AS bank_outflow
-    JOIN canonical_events AS brokerage_inflow
-      ON brokerage_inflow.id=NEW.brokerage_inflow_event_id
-    JOIN canonical_events AS fx_source ON fx_source.id=NEW.fx_source_event_id
-    JOIN canonical_events AS fx_destination
-      ON fx_destination.id=NEW.fx_destination_event_id
-    JOIN accounts AS bank_account ON bank_account.id=bank_outflow.account_id
-    JOIN accounts AS brokerage_account
-      ON brokerage_account.id=brokerage_inflow.account_id
-   WHERE bank_outflow.id=NEW.bank_outflow_event_id
-     AND bank_outflow.event_type='cash'
-     AND bank_outflow.flow_type='transfer'
-     AND bank_outflow.status='confirmed'
-     AND bank_outflow.amount_minor<0
-     AND EXISTS (
-       SELECT 1 FROM event_evidence
-        WHERE canonical_event_id=bank_outflow.id
-     )
-     AND bank_account.kind<>'brokerage'
-     AND brokerage_account.kind='brokerage'
-     AND brokerage_inflow.event_type='cash'
-     AND brokerage_inflow.flow_type='transfer'
-     AND brokerage_inflow.status='confirmed'
-     AND brokerage_inflow.amount_minor=-bank_outflow.amount_minor
-     AND brokerage_inflow.currency=bank_outflow.currency
-     AND brokerage_inflow.occurred_on=bank_outflow.occurred_on
-     AND brokerage_inflow.component='cash_' || lower(brokerage_inflow.currency)
-     AND fx_source.account_id=brokerage_inflow.account_id
-     AND fx_source.event_type='cash'
-     AND fx_source.flow_type='investment'
-     AND lower(COALESCE(fx_source.category,''))='fx'
-     AND fx_source.status='confirmed'
-     AND fx_source.amount_minor=-brokerage_inflow.amount_minor
-     AND fx_source.currency=brokerage_inflow.currency
-     AND fx_source.component='cash_' || lower(fx_source.currency)
-     AND fx_source.occurred_on>=brokerage_inflow.occurred_on
-     AND fx_source.occurred_on<=date(brokerage_inflow.occurred_on,'+3 days')
-     AND fx_destination.account_id=brokerage_inflow.account_id
-     AND fx_destination.event_type='cash'
-     AND fx_destination.flow_type='investment'
-     AND lower(COALESCE(fx_destination.category,''))='fx'
-     AND fx_destination.status='confirmed'
-     AND fx_destination.amount_minor>0
-     AND fx_destination.currency<>fx_source.currency
-     AND fx_destination.component='cash_' || lower(fx_destination.currency)
-     AND fx_destination.occurred_on=fx_source.occurred_on
-     AND EXISTS (
-       SELECT 1
-         FROM event_evidence AS source_evidence
-         JOIN source_events AS source_observation
-           ON source_observation.id=source_evidence.source_event_id
-         JOIN event_evidence AS destination_evidence
-           ON destination_evidence.canonical_event_id=fx_destination.id
-         JOIN source_events AS destination_observation
-           ON destination_observation.id=destination_evidence.source_event_id
-         JOIN documents AS document ON document.id=source_observation.source_doc_id
-        WHERE source_evidence.canonical_event_id=fx_source.id
-          AND destination_observation.source_doc_id=document.id
-          AND lower(replace(COALESCE(document.doc_type,''),'-','_'))
-                IN ('fx_conversion','brokerage_fx_conversion')
-     )
-))
-BEGIN
-  SELECT RAISE(ABORT, 'invalid funding FX link');
+CREATE INDEX idx_fx_conversions_account_date ON fx_conversions(account_id, converted_on);
+CREATE TABLE dividend_events (
+    cash_event_id       INTEGER PRIMARY KEY
+                          REFERENCES canonical_events(id) ON DELETE CASCADE,
+    account_id          INTEGER NOT NULL
+                          REFERENCES accounts(id) ON DELETE RESTRICT,
+    security_id         INTEGER NOT NULL
+                          REFERENCES securities(id) ON DELETE RESTRICT,
+    ex_date             TEXT,
+    quantity            REAL CHECK (quantity IS NULL
+                                    OR (quantity > 0 AND quantity < 1e999)),
+    gross_minor         INTEGER CHECK (gross_minor IS NULL
+                                       OR (typeof(gross_minor)='integer'
+                                           AND gross_minor >= 0)),
+    withholding_minor   INTEGER CHECK (withholding_minor IS NULL
+                                       OR (typeof(withholding_minor)='integer'
+                                           AND withholding_minor >= 0)),
+    expected_net_minor  INTEGER CHECK (expected_net_minor IS NULL
+                                       OR typeof(expected_net_minor)='integer'),
+    distribution_id     INTEGER
+                          REFERENCES security_distributions(id) ON DELETE SET NULL,
+    created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (ex_date IS NULL OR (typeof(ex_date)='text' AND length(ex_date)=10 AND ex_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(ex_date)=ex_date))
+);
+CREATE UNIQUE INDEX uq_dividend_events_entitlement
+  ON dividend_events(account_id, security_id, ex_date)
+  WHERE ex_date IS NOT NULL;
+CREATE TABLE ledger_log (
+    id            INTEGER PRIMARY KEY,
+    applied_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    kind          TEXT NOT NULL CHECK (kind IN ('intents','raw_sql','reconcile')),
+    summary       TEXT NOT NULL CHECK (length(trim(summary)) > 0),
+    request_hash  TEXT
+);
+CREATE INDEX idx_ledger_log_kind_time ON ledger_log(kind, applied_at);
+CREATE TRIGGER transfer_links_valid_insert
+                      BEFORE INSERT ON transfer_links
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS outflow
+      JOIN canonical_events AS inflow ON inflow.id=NEW.inflow_event_id
+     WHERE outflow.id=NEW.outflow_event_id
+       AND outflow.event_type='cash'
+       AND inflow.event_type='cash'
+       AND outflow.flow_type='transfer'
+       AND inflow.flow_type='transfer'
+       AND outflow.amount_minor<0
+       AND inflow.amount_minor=-outflow.amount_minor
+       AND inflow.currency=outflow.currency
+       AND inflow.account_id<>outflow.account_id
+       AND outflow.status<>'excluded'
+       AND inflow.status<>'excluded'
+       AND julianday(inflow.occurred_on)-julianday(outflow.occurred_on)
+           BETWEEN -3 AND 31
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid transfer link');
 END;
-CREATE TRIGGER funding_fx_links_valid_update
-BEFORE UPDATE OF bank_outflow_event_id, brokerage_inflow_event_id,
-  fx_source_event_id, fx_destination_event_id, match_method
-ON funding_fx_links
-WHEN NOT (EXISTS (
-  SELECT 1
-    FROM canonical_events AS bank_outflow
-    JOIN canonical_events AS brokerage_inflow
-      ON brokerage_inflow.id=NEW.brokerage_inflow_event_id
-    JOIN canonical_events AS fx_source ON fx_source.id=NEW.fx_source_event_id
-    JOIN canonical_events AS fx_destination
-      ON fx_destination.id=NEW.fx_destination_event_id
-    JOIN accounts AS bank_account ON bank_account.id=bank_outflow.account_id
-    JOIN accounts AS brokerage_account
-      ON brokerage_account.id=brokerage_inflow.account_id
-   WHERE bank_outflow.id=NEW.bank_outflow_event_id
-     AND bank_outflow.event_type='cash'
-     AND bank_outflow.flow_type='transfer'
-     AND bank_outflow.status='confirmed'
-     AND bank_outflow.amount_minor<0
-     AND EXISTS (
-       SELECT 1 FROM event_evidence
-        WHERE canonical_event_id=bank_outflow.id
-     )
-     AND bank_account.kind<>'brokerage'
-     AND brokerage_account.kind='brokerage'
-     AND brokerage_inflow.event_type='cash'
-     AND brokerage_inflow.flow_type='transfer'
-     AND brokerage_inflow.status='confirmed'
-     AND brokerage_inflow.amount_minor=-bank_outflow.amount_minor
-     AND brokerage_inflow.currency=bank_outflow.currency
-     AND brokerage_inflow.occurred_on=bank_outflow.occurred_on
-     AND brokerage_inflow.component='cash_' || lower(brokerage_inflow.currency)
-     AND fx_source.account_id=brokerage_inflow.account_id
-     AND fx_source.event_type='cash'
-     AND fx_source.flow_type='investment'
-     AND lower(COALESCE(fx_source.category,''))='fx'
-     AND fx_source.status='confirmed'
-     AND fx_source.amount_minor=-brokerage_inflow.amount_minor
-     AND fx_source.currency=brokerage_inflow.currency
-     AND fx_source.component='cash_' || lower(fx_source.currency)
-     AND fx_source.occurred_on>=brokerage_inflow.occurred_on
-     AND fx_source.occurred_on<=date(brokerage_inflow.occurred_on,'+3 days')
-     AND fx_destination.account_id=brokerage_inflow.account_id
-     AND fx_destination.event_type='cash'
-     AND fx_destination.flow_type='investment'
-     AND lower(COALESCE(fx_destination.category,''))='fx'
-     AND fx_destination.status='confirmed'
-     AND fx_destination.amount_minor>0
-     AND fx_destination.currency<>fx_source.currency
-     AND fx_destination.component='cash_' || lower(fx_destination.currency)
-     AND fx_destination.occurred_on=fx_source.occurred_on
-     AND EXISTS (
-       SELECT 1
-         FROM event_evidence AS source_evidence
-         JOIN source_events AS source_observation
-           ON source_observation.id=source_evidence.source_event_id
-         JOIN event_evidence AS destination_evidence
-           ON destination_evidence.canonical_event_id=fx_destination.id
-         JOIN source_events AS destination_observation
-           ON destination_observation.id=destination_evidence.source_event_id
-         JOIN documents AS document ON document.id=source_observation.source_doc_id
-        WHERE source_evidence.canonical_event_id=fx_source.id
-          AND destination_observation.source_doc_id=document.id
-          AND lower(replace(COALESCE(document.doc_type,''),'-','_'))
-                IN ('fx_conversion','brokerage_fx_conversion')
-     )
-))
-BEGIN
-  SELECT RAISE(ABORT, 'invalid funding FX link');
+CREATE TRIGGER transfer_links_valid_update
+                      BEFORE UPDATE OF outflow_event_id, inflow_event_id, match_method ON transfer_links
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS outflow
+      JOIN canonical_events AS inflow ON inflow.id=NEW.inflow_event_id
+     WHERE outflow.id=NEW.outflow_event_id
+       AND outflow.event_type='cash'
+       AND inflow.event_type='cash'
+       AND outflow.flow_type='transfer'
+       AND inflow.flow_type='transfer'
+       AND outflow.amount_minor<0
+       AND inflow.amount_minor=-outflow.amount_minor
+       AND inflow.currency=outflow.currency
+       AND inflow.account_id<>outflow.account_id
+       AND outflow.status<>'excluded'
+       AND inflow.status<>'excluded'
+       AND julianday(inflow.occurred_on)-julianday(outflow.occurred_on)
+           BETWEEN -3 AND 31
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid transfer link');
 END;
-CREATE TRIGGER canonical_events_funding_fx_identity_update
-BEFORE UPDATE OF account_id,event_type,occurred_on,currency,
-  amount_minor,flow_type,category,component,status
-ON canonical_events
-WHEN (
-  NEW.account_id IS NOT OLD.account_id
-  OR NEW.event_type IS NOT OLD.event_type
-  OR NEW.occurred_on IS NOT OLD.occurred_on
-  OR NEW.currency IS NOT OLD.currency
-  OR NEW.amount_minor IS NOT OLD.amount_minor
-  OR NEW.flow_type IS NOT OLD.flow_type
-  OR NEW.category IS NOT OLD.category
-  OR NEW.component IS NOT OLD.component
-  OR NEW.status IS NOT OLD.status
-) AND EXISTS (
-  SELECT 1 FROM funding_fx_links
-   WHERE bank_outflow_event_id=OLD.id
-      OR brokerage_inflow_event_id=OLD.id
-      OR fx_source_event_id=OLD.id
-      OR fx_destination_event_id=OLD.id
+CREATE TRIGGER fx_conversions_valid_insert
+                      BEFORE INSERT ON fx_conversions
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS sell
+      JOIN canonical_events AS buy ON buy.id=NEW.buy_event_id
+     WHERE sell.id=NEW.sell_event_id
+       AND sell.event_type='cash'
+       AND buy.event_type='cash'
+       AND sell.account_id=NEW.account_id
+       AND buy.account_id=NEW.account_id
+       AND sell.flow_type='investment'
+       AND buy.flow_type='investment'
+       AND lower(COALESCE(sell.category,''))='fx'
+       AND lower(COALESCE(buy.category,''))='fx'
+       AND sell.amount_minor<0
+       AND buy.amount_minor>0
+       AND sell.currency<>buy.currency
+       AND (
+         (NEW.base_currency=buy.currency AND NEW.quote_currency=sell.currency)
+         OR (NEW.base_currency=sell.currency AND NEW.quote_currency=buy.currency)
+     )
+       AND sell.occurred_on=NEW.converted_on
+       AND buy.occurred_on>=sell.occurred_on
+       AND sell.status<>'excluded'
+       AND buy.status<>'excluded'
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid FX conversion');
+END;
+CREATE TRIGGER fx_conversions_valid_update
+                      BEFORE UPDATE OF account_id, converted_on, sell_event_id, buy_event_id, base_currency, quote_currency ON fx_conversions
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS sell
+      JOIN canonical_events AS buy ON buy.id=NEW.buy_event_id
+     WHERE sell.id=NEW.sell_event_id
+       AND sell.event_type='cash'
+       AND buy.event_type='cash'
+       AND sell.account_id=NEW.account_id
+       AND buy.account_id=NEW.account_id
+       AND sell.flow_type='investment'
+       AND buy.flow_type='investment'
+       AND lower(COALESCE(sell.category,''))='fx'
+       AND lower(COALESCE(buy.category,''))='fx'
+       AND sell.amount_minor<0
+       AND buy.amount_minor>0
+       AND sell.currency<>buy.currency
+       AND (
+         (NEW.base_currency=buy.currency AND NEW.quote_currency=sell.currency)
+         OR (NEW.base_currency=sell.currency AND NEW.quote_currency=buy.currency)
+     )
+       AND sell.occurred_on=NEW.converted_on
+       AND buy.occurred_on>=sell.occurred_on
+       AND sell.status<>'excluded'
+       AND buy.status<>'excluded'
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid FX conversion');
+END;
+CREATE TRIGGER dividend_events_valid_insert
+                      BEFORE INSERT ON dividend_events
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS cash
+     WHERE cash.id=NEW.cash_event_id
+       AND cash.event_type='cash'
+       AND cash.account_id=NEW.account_id
+       AND cash.flow_type='income'
+       AND lower(COALESCE(cash.category,''))='dividend'
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid dividend event');
+END;
+CREATE TRIGGER dividend_events_valid_update
+                      BEFORE UPDATE OF cash_event_id, account_id ON dividend_events
+                      WHEN NOT (EXISTS (
+    SELECT 1
+      FROM canonical_events AS cash
+     WHERE cash.id=NEW.cash_event_id
+       AND cash.event_type='cash'
+       AND cash.account_id=NEW.account_id
+       AND cash.flow_type='income'
+       AND lower(COALESCE(cash.category,''))='dividend'
+  ))
+                      BEGIN
+                        SELECT RAISE(ABORT, 'invalid dividend event');
+END;
+CREATE TRIGGER canonical_events_transfer_identity_update
+  BEFORE UPDATE OF account_id,event_type,currency,amount_minor,
+    flow_type,component,status
+  ON canonical_events
+  WHEN (
+    NEW.account_id IS NOT OLD.account_id
+    OR NEW.event_type IS NOT OLD.event_type
+    OR NEW.currency IS NOT OLD.currency
+    OR NEW.amount_minor IS NOT OLD.amount_minor
+    OR NEW.flow_type IS NOT OLD.flow_type
+    OR NEW.component IS NOT OLD.component
+    OR (NEW.status='excluded' AND OLD.status<>'excluded')
+  ) AND EXISTS (
+    SELECT 1 FROM transfer_links
+     WHERE outflow_event_id=OLD.id OR inflow_event_id=OLD.id
 )
-BEGIN
-  SELECT RAISE(ABORT, 'linked funding FX economics are immutable');
+  BEGIN
+    SELECT RAISE(ABORT, 'linked transfer economics are immutable');
+END;
+CREATE TRIGGER canonical_events_fx_conversion_identity_update
+  BEFORE UPDATE OF account_id,event_type,occurred_on,currency,
+    amount_minor,flow_type,category,component,status
+  ON canonical_events
+  WHEN (
+    NEW.account_id IS NOT OLD.account_id
+    OR NEW.event_type IS NOT OLD.event_type
+    OR NEW.occurred_on IS NOT OLD.occurred_on
+    OR NEW.currency IS NOT OLD.currency
+    OR NEW.amount_minor IS NOT OLD.amount_minor
+    OR NEW.flow_type IS NOT OLD.flow_type
+    OR NEW.category IS NOT OLD.category
+    OR NEW.component IS NOT OLD.component
+    OR (NEW.status='excluded' AND OLD.status<>'excluded')
+  ) AND EXISTS (
+    SELECT 1 FROM fx_conversions
+     WHERE sell_event_id=OLD.id OR buy_event_id=OLD.id
+)
+  BEGIN
+    SELECT RAISE(ABORT, 'linked FX conversion economics are immutable');
+END;
+CREATE TRIGGER canonical_events_dividend_identity_update
+  BEFORE UPDATE OF account_id,event_type,currency,flow_type,category
+  ON canonical_events
+  WHEN (
+    NEW.account_id IS NOT OLD.account_id
+    OR NEW.event_type IS NOT OLD.event_type
+    OR NEW.currency IS NOT OLD.currency
+    OR NEW.flow_type IS NOT OLD.flow_type
+    OR NEW.category IS NOT OLD.category
+  ) AND EXISTS (
+    SELECT 1 FROM dividend_events WHERE cash_event_id=OLD.id
+)
+  BEGIN
+    SELECT RAISE(ABORT, 'linked dividend identity is immutable');
 END;
 
 CREATE TRIGGER transactions_event_links_insert
@@ -1157,11 +1078,9 @@ CREATE TABLE security_distribution_refreshes (
   PRIMARY KEY (security_id, source)
 );
 
--- FX rates for cross-currency reporting. Reporting currency is ILS by convention.
--- `source` tracks provenance: 'document' = extracted from a Drive doc (the user's
--- actual conversion rate, e.g. they manually converted USD at 3.3 ILS on a day
--- the market closed 3.28). 'yahoo' = market reference rate from the daily fetch.
--- Document rows are authoritative; the Yahoo refresh path must never overwrite them.
+-- Market FX reference rates for cross-currency reporting (ILS by convention),
+-- filled by the daily Yahoo fetch. A conversion's own rate lives on
+-- fx_conversions. Older 'document' rows are still honoured and never overwritten.
 CREATE TABLE fx_rates (
   date            TEXT NOT NULL,
   base_currency   TEXT NOT NULL,                           -- e.g. 'USD'
@@ -1278,4 +1197,5 @@ INSERT INTO schema_migrations(version, name) VALUES
   (12, 'security_distributions'),
   (13, 'market_observations'),
   (14, 'inferred_account_transfers'),
-  (15, 'funding_fx_links');
+  (15, 'funding_fx_links'),
+  (16, 'ledger_engine');

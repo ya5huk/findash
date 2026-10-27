@@ -72,4 +72,4 @@
 ### Bank FX notices (e.g. Hapoalim)
 
 - Bank-side foreign-currency purchase/sale notices for the checking account, distinct from your brokerage's internal FX screenshots.
-- Insert document-derived `fx_rates` only when the notice states the actual conversion rate. Insert checking-account transactions only when the statement side is not already present and the cash impact is unambiguous.
+- A notice that states the conversion is an `fx_conversion` intent on the checking account (its rate stays on the conversion, never in `fx_rates`). Record checking-account movements only when the statement side is not already present and the cash impact is unambiguous.

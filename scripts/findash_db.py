@@ -9,6 +9,7 @@ filesystem paths, or schema mutation; migrations have their own fixed command.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -19,14 +20,8 @@ from typing import Any
 
 from findash_core.corrections import CorrectionError, remove_incorrect_balance
 from findash_core.db import connect_db
-from findash_core.funding_reconciliation import (
-    FundingReconciliationError,
-    infer_brokerage_funding,
-)
-from findash_core.funding_fx_reconciliation import (
-    FundingFxReconciliationError,
-    reconcile_funding_fx,
-)
+from findash_core.ledger.engine import IntentError, LedgerWriter
+from findash_core.ledger.reconcile import Reconciler
 from findash_core.migrations import MigrationError, require_current_schema
 from findash_core.reconciliation import (
     ReconciliationError,
@@ -38,7 +33,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "data" / "finance.db"
 BATCH_ROOT = ROOT / "inbox" / "staging" / "operations"
 MAX_QUERY_ROWS = 500
-MAX_BATCH_STATEMENTS = 2_000
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
 
 _COMMENT_OR_SEPARATOR = re.compile(r";|--|/\*|\*/")
@@ -108,33 +102,52 @@ def query_database(
         con.close()
 
 
-def apply_batch(path: Path, payload: dict) -> int:
-    statements = payload.get("statements")
-    if not isinstance(statements, list) or not statements:
-        raise GatewayError("batch requires a non-empty statements list")
-    if len(statements) > MAX_BATCH_STATEMENTS:
-        raise GatewayError(f"batch exceeds {MAX_BATCH_STATEMENTS} statements")
-    prepared: list[tuple[str, list[Any] | dict[str, Any]]] = []
-    for index, item in enumerate(statements):
-        if not isinstance(item, dict) or not isinstance(item.get("sql"), str):
-            raise GatewayError(f"statement {index} requires a SQL string")
-        params = item.get("params", [])
-        if not isinstance(params, (list, dict)):
-            raise GatewayError(f"statement {index} params must be a list or object")
-        prepared.append((validate_mutation(item["sql"]), params))
+def apply_batch(path: Path, payload: dict) -> dict[str, Any]:
+    """Apply one request of intents atomically and validate the resulting graph."""
 
+    if not isinstance(payload, dict) or set(payload) != {"intents"}:
+        raise GatewayError(
+            "a write request holds exactly one intents list; see docs/database-operations.md"
+        )
     con = connect_db(path)
     try:
         with con:
-            for statement, params in prepared:
-                con.execute(statement, params)
-            # Raw convenience rows may be written before their normalized
-            # evidence inside this transaction.  Validate the completed graph
-            # before the context manager is allowed to commit it.
+            outcomes = LedgerWriter(con).apply(
+                payload["intents"], raw_sql_validator=validate_mutation
+            )
+            # Validate the completed graph before the context manager commits it.
             require_current_schema(con)
-        return len(prepared)
+        return {"intents": outcomes}
     finally:
         con.close()
+
+
+def reconcile_ledger(path: Path, today: str, *, dry_run: bool = False) -> dict:
+    """Expect dividends, auto-confirm unambiguous matches, and list open items."""
+
+    con = connect_db(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            result = Reconciler(con, today=today).run()
+            require_current_schema(con)
+        except BaseException:
+            con.rollback()
+            raise
+        if dry_run:
+            con.rollback()
+        else:
+            con.commit()
+        return result
+    finally:
+        con.close()
+
+
+def _iso_day(value: str) -> str:
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
 
 
 def _request_path(value: str) -> Path:
@@ -185,7 +198,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
     query = sub.add_parser("query", help="run one bounded parameterized SELECT request")
     query.add_argument("file", type=_request_path)
-    batch = sub.add_parser("apply", help="apply one atomic parameterized JSON batch")
+    batch = sub.add_parser("apply", help="apply one atomic request of typed intents")
     batch.add_argument("file", type=_request_path)
     reconcile = sub.add_parser(
         "reconcile-account",
@@ -197,16 +210,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="remove one fully guarded, explicitly reviewed balance",
     )
     correction.add_argument("file", type=_request_path)
-    funding = sub.add_parser(
-        "infer-brokerage-funding",
-        help="confirm bank transfers proven by complete brokerage cash snapshots",
+    reconcile_ledger_parser = sub.add_parser(
+        "reconcile",
+        help="expect dividends, auto-confirm unambiguous matches, list open items",
     )
-    funding.add_argument("file", type=_request_path)
-    funding_fx = sub.add_parser(
-        "reconcile-funding-fx",
-        help="link a reviewed bank transfer to a complete brokerage FX conversion",
-    )
-    funding_fx.add_argument("file", type=_request_path)
+    reconcile_ledger_parser.add_argument("--today", type=_iso_day, default=date.today().isoformat())
+    reconcile_ledger_parser.add_argument("--dry-run", action="store_true")
     sub.add_parser("integrity", help="run foreign-key and integrity checks")
     return parser.parse_args(argv)
 
@@ -225,8 +234,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(query_database(DB, request["sql"], params), ensure_ascii=False))
         elif args.command == "apply":
             payload = json.loads(args.file.read_text(encoding="utf-8"))
-            count = apply_batch(DB, payload)
-            print(f"Database batch applied: {count} statement(s)")
+            result = apply_batch(DB, payload)
+            print(json.dumps({"status": "ok", **result}, sort_keys=True))
         elif args.command == "reconcile-account":
             payload = json.loads(args.file.read_text(encoding="utf-8"))
             counts = reconcile_logical_accounts(DB, payload)
@@ -235,14 +244,9 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.file.read_text(encoding="utf-8"))
             counts = remove_incorrect_balance(DB, payload)
             print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
-        elif args.command == "infer-brokerage-funding":
-            payload = json.loads(args.file.read_text(encoding="utf-8"))
-            counts = infer_brokerage_funding(DB, payload)
-            print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
-        elif args.command == "reconcile-funding-fx":
-            payload = json.loads(args.file.read_text(encoding="utf-8"))
-            counts = reconcile_funding_fx(DB, payload)
-            print(json.dumps({"status": "ok", "counts": counts}, sort_keys=True))
+        elif args.command == "reconcile":
+            result = reconcile_ledger(DB, args.today, dry_run=args.dry_run)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         else:
             con = connect_db(DB, readonly=True, migrate=False)
             try:
@@ -259,8 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         GatewayError,
         CorrectionError,
-        FundingReconciliationError,
-        FundingFxReconciliationError,
+        IntentError,
         MigrationError,
         ReconciliationError,
         json.JSONDecodeError,

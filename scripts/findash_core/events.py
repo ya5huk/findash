@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from typing import Iterator
 
+# Full history is fetched once per account and filtered per as_of, because the
+# chart builders replay hundreds of valuation dates. "No later date" sorts
+# after every real ISO date, so it selects the complete history.
+_UNBOUNDED_AS_OF = "9999-12-31"
+
 
 class EventReader:
-    """Mixin for the event-query portion of the accounting engine."""
+    """Mixin for the event-query portion of the accounting engine.
+
+    Rows returned by :meth:`transactions` and :meth:`trades` are shared with a
+    per-engine history cache; callers must treat them as read-only.
+    """
 
     def _legacy_transactions(self, account_id: int, as_of: str) -> Iterator[dict]:
         evidence_filters: list[str] = []
@@ -141,14 +150,29 @@ class EventReader:
         for row in rows:
             yield dict(row)
 
+    def _history_cache(self, kind: str) -> dict[int, list[dict]]:
+        """Per-account full-history rows, invalidated by same-connection writes."""
+
+        version = self.con.total_changes
+        cache = getattr(self, "_event_history_cache", None)
+        if cache is None or cache["version"] != version:
+            cache = {"version": version, "transactions": {}, "trades": {}}
+            self._event_history_cache = cache
+        return cache[kind]
+
     def transactions(self, account_id: int, as_of: str) -> list[dict]:
-        rows = list(self._legacy_transactions(account_id, as_of))
-        rows.extend(self._canonical_transactions(account_id, as_of) or ())
-        opened_on = self._account_history_start(account_id)
-        if opened_on:
-            rows = [row for row in rows if str(row["date"]) >= opened_on]
-        rows.sort(key=lambda row: (row["date"], row["id"]))
-        return rows
+        cache = self._history_cache("transactions")
+        if account_id not in cache:
+            rows = list(self._legacy_transactions(account_id, _UNBOUNDED_AS_OF))
+            rows.extend(
+                self._canonical_transactions(account_id, _UNBOUNDED_AS_OF) or ()
+            )
+            opened_on = self._account_history_start(account_id)
+            if opened_on:
+                rows = [row for row in rows if str(row["date"]) >= opened_on]
+            rows.sort(key=lambda row: (row["date"], row["id"]))
+            cache[account_id] = rows
+        return [row for row in cache[account_id] if row["date"] <= as_of]
 
     def _legacy_trades(self, account_id: int, as_of: str) -> Iterator[dict]:
         evidence_filters: list[str] = []
@@ -214,37 +238,51 @@ class EventReader:
         if not self._has_canonical or not required.issubset(self._canonical_columns):
             return
         status_filter = "AND e.status='confirmed'" if "status" in self._canonical_columns else ""
-        cash_linked_expr = "0"
-        cash_linked_parameters: tuple[str, ...] = ()
+        # A link becomes effective only when its posted cash event belongs to
+        # the requested history. Future settlement evidence must never rewrite
+        # an earlier account state, so trades() compares the earliest linked
+        # cash date against each requested as_of.
+        cash_linked_on_expr = "NULL"
         if self._has_trade_cash_links:
-            # A link becomes effective only when its posted cash event belongs to
-            # the requested history. Future settlement evidence must never rewrite
-            # an earlier account state.
-            cash_linked_expr = """EXISTS (
-                SELECT 1 FROM trade_cash_links l
+            cash_linked_on_expr = """(
+                SELECT MIN(cash.occurred_on) FROM trade_cash_links l
                 JOIN canonical_events cash ON cash.id=l.cash_event_id
-                WHERE l.trade_event_id=e.id AND cash.occurred_on<=?
+                WHERE l.trade_event_id=e.id
             )"""
-            cash_linked_parameters = (as_of,)
         rows = self.con.execute(
             f"""SELECT e.id, e.occurred_on AS date, e.security_id, e.side,
                       e.quantity AS shares, e.price_minor, e.fees_minor,
                       e.currency, s.ticker, s.currency AS security_currency,
-                      1 AS is_canonical, {cash_linked_expr} AS cash_linked
+                      1 AS is_canonical,
+                      {cash_linked_on_expr} AS cash_linked_on
                  FROM canonical_events e
                  JOIN securities s ON s.id=e.security_id
                 WHERE e.account_id=? AND e.event_type='trade' AND e.occurred_on<=? {status_filter}
                 ORDER BY e.occurred_on, e.id""",
-            (*cash_linked_parameters, account_id, as_of),
+            (account_id, as_of),
         )
         for row in rows:
             yield dict(row)
 
     def trades(self, account_id: int, as_of: str) -> list[dict]:
-        rows = list(self._legacy_trades(account_id, as_of))
-        rows.extend(self._canonical_trades(account_id, as_of) or ())
-        opened_on = self._account_history_start(account_id)
-        if opened_on:
-            rows = [row for row in rows if str(row["date"]) >= opened_on]
-        rows.sort(key=lambda row: (row["date"], row["id"]))
-        return rows
+        cache = self._history_cache("trades")
+        if account_id not in cache:
+            rows = list(self._legacy_trades(account_id, _UNBOUNDED_AS_OF))
+            rows.extend(self._canonical_trades(account_id, _UNBOUNDED_AS_OF) or ())
+            opened_on = self._account_history_start(account_id)
+            if opened_on:
+                rows = [row for row in rows if str(row["date"]) >= opened_on]
+            rows.sort(key=lambda row: (row["date"], row["id"]))
+            cache[account_id] = rows
+        result = []
+        for row in cache[account_id]:
+            if row["date"] > as_of:
+                continue
+            cash_linked_on = row.get("cash_linked_on")
+            cash_linked = int(
+                cash_linked_on is not None and cash_linked_on <= as_of
+            )
+            if row.get("cash_linked") != cash_linked:
+                row = {**row, "cash_linked": cash_linked}
+            result.append(row)
+        return result

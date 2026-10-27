@@ -42,7 +42,11 @@ Also audit logical-account identity: compare active brokerage accounts' latest h
 
 Audit bank-account transitions too. Multiple same-institution checking rows are an accuracy blocker when their activity does not economically overlap, an exact closing/opening transfer joins their boundary, or pre-boundary manual snapshots on the successor track the predecessor ledger. Treat a bank-renumbering migration as one logical account with separate feeds and recommend the reviewed `reconcile-account` flow. Do not infer identity from a similar balance alone, and never print the private comparison evidence.
 
-Count legacy brokerage `transactions` with `flow_type='investment'` that still lack normalized canonical evidence. Report only the count as a migration warning: where those rows overlap raw trade history, they cannot prove which trade cash they duplicate, so the dashboard preserves the trade-derived legacy treatment and warns. Reconcile them interactively into canonical cash/trade events and add `trade_cash_links` only from full source evidence; never auto-match by amount/date or print row details.
+Count payslips that should be paired with a salary credit but are not: a salary credit with the same exact native net amount and currency exists after the pay period starts, yet the payslip's `paid_on` does not equal that credit's posting date. Each one counts the same pay twice in cash flow. Report only the count as an accuracy warning and pair them interactively per [`docs/doc-types/payslips.md`](../../docs/doc-types/payslips.md) ("Payment reconciliation"); never pair automatically or print amounts or dates.
+
+Ledger hygiene: run `python3 scripts/findash_db.py reconcile --dry-run` (it changes nothing). Report escalated open items (`escalate: true`) as one ⚠️ count per kind with the oldest age, and every `raw_sql_used` item as a ⚠️ — the escape hatch bypassed the typed write path and the case deserves a typed intent. Never print amounts, dates, ids or reasons from that output.
+
+Count legacy brokerage `transactions` with `flow_type='investment'` that still lack normalized canonical evidence. Report only the count as a migration warning: where those rows overlap raw trade history, they cannot prove which trade cash they duplicate, so the dashboard preserves the trade-derived legacy treatment and warns. Reconcile them interactively with `cash` intents adopting each raw row (`{"transaction": <id>}` evidence) and `trade_settlement` only from full source evidence; never auto-match by amount/date or print row details.
 
 ## Auto-fix order
 

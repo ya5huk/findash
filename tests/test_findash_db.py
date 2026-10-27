@@ -21,6 +21,7 @@ from findash_core.corrections import (  # noqa: E402
     remove_incorrect_balance,
 )
 from findash_core.migrations import MigrationError  # noqa: E402
+from findash_core.ledger.engine import IntentError  # noqa: E402
 from findash_db import (  # noqa: E402
     GatewayError,
     apply_batch,
@@ -70,41 +71,53 @@ class DatabaseGatewayTest(unittest.TestCase):
             ):
                 validate_mutation(statement)
 
+    @staticmethod
+    def raw(statements: list[dict]) -> dict:
+        return {"type": "raw_sql", "reason": "test fixture", "statements": statements}
+
+    def test_requests_hold_only_intents(self):
+        for payload in (
+            {"statements": [{"sql": "INSERT INTO accounts(name) VALUES('x')"}]},
+            {"statements": [], "intents": [{"type": "meta", "key": "a", "value": "b"}]},
+            {"intents": []},
+        ):
+            with self.subTest(payload=payload), self.assertRaises((GatewayError, IntentError)):
+                apply_batch(self.db, payload)
+
     def test_batch_is_atomic_and_foreign_keys_are_on(self):
         payload = {
-            "statements": [
+            "intents": [
                 {
-                    "sql": "INSERT INTO accounts(name,kind,institution,currency) VALUES(?,?,?,?)",
-                    "params": ["Cash", "checking", "Bank", "ILS"],
+                    "type": "account",
+                    "name": "Cash",
+                    "kind": "checking",
+                    "institution": "Bank",
+                    "currency": "ILS",
                 },
-                {
-                    "sql": "INSERT INTO transactions(account_id,date,amount_minor,currency) VALUES(?,?,?,?)",
-                    "params": [999, "2026-01-01", 100, "ILS"],
-                },
-            ]
+                self.raw(
+                    [
+                        {
+                            "sql": "INSERT INTO transactions(account_id,date,amount_minor,currency) VALUES(?,?,?,?)",
+                            "params": [999, "2026-01-01", 100, "ILS"],
+                        }
+                    ]
+                ),
+            ],
         }
         with self.assertRaises(sqlite3.IntegrityError):
             apply_batch(self.db, payload)
         self.assertEqual(query_database(self.db, "SELECT COUNT(*) AS n FROM accounts"), [{"n": 0}])
 
-    def test_parameterized_batch_and_query(self):
-        count = apply_batch(
-            self.db,
-            {
-                "statements": [
-                    {
-                        "sql": "INSERT INTO accounts(name,kind,institution,currency) VALUES(:name,:kind,:institution,:currency)",
-                        "params": {
-                            "name": "Cash",
-                            "kind": "checking",
-                            "institution": "Bank",
-                            "currency": "ILS",
-                        },
-                    }
-                ]
-            },
-        )
-        self.assertEqual(count, 1)
+    def test_intent_batch_and_query(self):
+        account = {
+            "type": "account",
+            "name": "Cash",
+            "kind": "checking",
+            "institution": "Bank",
+            "currency": "ILS",
+        }
+        self.assertEqual(apply_batch(self.db, {"intents": [account]}), {"intents": {"account:created": 1}})
+        self.assertEqual(apply_batch(self.db, {"intents": [account]}), {"intents": {"account:unchanged": 1}})
         self.assertEqual(
             query_database(self.db, "SELECT kind FROM accounts WHERE name=?", ["Cash"]),
             [{"kind": "checking"}],
@@ -135,25 +148,38 @@ class DatabaseGatewayTest(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(MigrationError, "transaction_event_pointer=1"):
-            apply_batch(self.db, {"statements": common})
+            apply_batch(self.db, {"intents": [self.raw(common)]})
         self.assertEqual(
             query_database(self.db, "SELECT COUNT(*) AS n FROM accounts"),
             [{"n": 0}],
         )
 
-        count = apply_batch(
+        result = apply_batch(
             self.db,
             {
-                "statements": [
-                    *common,
-                    {
-                        "sql": "INSERT INTO event_evidence(canonical_event_id,source_event_id,evidence_role,match_method) VALUES(1,1,?,?)",
-                        "params": ["primary", "provider identity"],
-                    },
+                "intents": [
+                    self.raw(
+                        [
+                            *common,
+                            {
+                                "sql": "INSERT INTO event_evidence(canonical_event_id,source_event_id,evidence_role,match_method) VALUES(1,1,?,?)",
+                                "params": ["primary", "provider identity"],
+                            },
+                        ]
+                    )
                 ]
             },
         )
-        self.assertEqual(count, len(common) + 1)
+        self.assertEqual(result["intents"], {"raw_sql:applied": 1})
+        self.assertEqual(
+            query_database(
+                self.db, "SELECT kind, summary FROM ledger_log ORDER BY id"
+            ),
+            [
+                {"kind": "raw_sql", "summary": "test fixture"},
+                {"kind": "intents", "summary": "raw_sql=1"},
+            ],
+        )
 
     def test_batch_rejects_trade_cash_links_with_wrong_signed_economics(self):
         def statements(cash_amount_minor: int) -> list[dict]:
@@ -196,16 +222,15 @@ class DatabaseGatewayTest(unittest.TestCase):
             ]
 
         with self.assertRaisesRegex(MigrationError, "trade_cash_economics=1"):
-            apply_batch(self.db, {"statements": statements(-500)})
+            apply_batch(self.db, {"intents": [self.raw(statements(-500))]})
         self.assertEqual(
             query_database(self.db, "SELECT COUNT(*) AS n FROM accounts"),
             [{"n": 0}],
         )
 
-        valid = statements(-101)
         self.assertEqual(
-            apply_batch(self.db, {"statements": valid}),
-            len(valid),
+            apply_batch(self.db, {"intents": [self.raw(statements(-101))]})["intents"],
+            {"raw_sql:applied": 1},
         )
 
     def test_request_files_reject_symlinked_queue_ancestors(self):

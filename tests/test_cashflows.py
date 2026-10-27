@@ -192,16 +192,49 @@ class CashFlowEngineTest(unittest.TestCase):
                 ("2026-03-05", -600_00, "ILS", "groceries"),
             ],
         )
+        con.execute(
+            """INSERT INTO transactions(
+                   account_id,date,amount_minor,currency,category,flow_type
+               ) VALUES(1,'2026-03-10',1000_00,'ILS','salary','income')"""
+        )
+        con.execute(
+            """INSERT INTO transactions(
+                   account_id,date,amount_minor,currency,category,flow_type
+               ) VALUES(1,'2026-03-12',50_00,'ILS','refund','refund')"""
+        )
         report = CashFlowEngine(con).build("2026-03-31")
 
         chart = DashboardModelBuilder(con)._expense_charts(report, "2026-03-31")
 
+        no_income = {
+            "total": 0.0,
+            "salary": 0.0,
+            "dividends": 0.0,
+            "refunds": 0.0,
+            "other": 0.0,
+        }
         self.assertEqual(
             chart["monthlyAlltime"],
             [
-                {"month": "2026-01", "total": 300.0, "top": [["groceries", 300.0]]},
-                {"month": "2026-02", "total": 0.0, "top": []},
-                {"month": "2026-03", "total": 600.0, "top": [["groceries", 600.0]]},
+                {
+                    "month": "2026-01",
+                    "total": 300.0,
+                    "top": [["groceries", 300.0]],
+                    "income": no_income,
+                },
+                {"month": "2026-02", "total": 0.0, "top": [], "income": no_income},
+                {
+                    "month": "2026-03",
+                    "total": 600.0,
+                    "top": [["groceries", 600.0]],
+                    "income": {
+                        "total": 1050.0,
+                        "salary": 1000.0,
+                        "dividends": 0.0,
+                        "refunds": 50.0,
+                        "other": 0.0,
+                    },
+                },
             ],
         )
 

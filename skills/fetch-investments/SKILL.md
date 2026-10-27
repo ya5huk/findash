@@ -61,7 +61,7 @@ then call them. If a name has drifted, re-discover by function from `/mcp`.
 
 - Confirm `data/finance.db` exists. Standalone with no DB? Tell the user to run sync/setup first; do not fabricate one.
 - Run `python3 scripts/migrate_db.py` before any query. This owns all schema evolution and enables the new feed/evidence model; never issue ad-hoc `ALTER TABLE` statements from this skill.
-- Use only `python3 scripts/findash_db.py query|apply` with request JSON under `inbox/staging/operations/`; never invoke the SQLite CLI or open an ad-hoc Python connection. Keep each mapped feed's writes in one atomic apply batch and delete every operation request through `scripts/staging_files.py` afterward. The dedicated `reconcile-account` command is allowed only for the explicitly confirmed duplicate-account flow below; it never accepts SQL.
+- Use only `python3 scripts/findash_db.py query|apply` with request JSON under `inbox/staging/operations/`; never invoke the SQLite CLI or open an ad-hoc Python connection. Every write is a typed intent ([`docs/database-operations.md`](../../docs/database-operations.md)); keep each mapped feed's intents in one atomic request and delete every operation request through `scripts/staging_files.py` afterward. The dedicated `reconcile-account` command is allowed only for the explicitly confirmed duplicate-account flow below; it never accepts SQL.
 - Read optional `[ibkr]` config. `account_name` is only a migration hint for an old installation; `account_ids` can restrict a connector exposing several provider accounts.
 
 ### 2. Probe + resolve account feeds (best-effort)
@@ -76,7 +76,7 @@ Resolve each returned provider account in this order:
 4. No brokerage or overlap evidence: create one logical IBKR brokerage and attach the feed.
 5. Multiple plausible accounts or partial evidence: ask once; without an answer, skip that provider account rather than guess.
 
-An amount/date match alone is never conclusive. Persist the feed mapping so future runs are stable. Do not create another logical account when IBKR is merely another view of an existing wrapper portfolio. Resolve the mapping before attaching evidence: linked feed/event/snapshot identity fields are intentionally immutable. If an existing mapping is wrong, stop and perform explicit graph reconciliation rather than repointing its parent row.
+An amount/date match alone is never conclusive. Persist the mapping with a `feed` intent (`provider: "ibkr"`, `feed_type: "api"`, `external_account_ref` = the provider account id) — and an `account` intent first when case 4 creates the brokerage — so future runs are stable. Do not create another logical account when IBKR is merely another view of an existing wrapper portfolio. Resolve the mapping before attaching evidence: linked feed/event/snapshot identity fields are intentionally immutable. If an existing mapping is wrong, stop and perform explicit graph reconciliation rather than repointing its parent row.
 
 If an older installation already has both a wrapper account and an IBKR-only account for the same portfolio, reconciliation means more than repointing the feed. Match their economic events first and identify every balance/position natural-key collision. Stop for review if either side has unmatched or ambiguous holdings, cash, or trades. After the user explicitly confirms the two rows are one economic account and reviews every resolution, use the fixed `findash_db.py reconcile-account` request documented in [`docs/database-operations.md`](../../docs/database-operations.md). Unmapped events are asserted distinct; one-to-one and aggregate event mappings must be explicit. The command preserves raw/source evidence, validates the final graph, closes the empty duplicate and reports counts only. Never simulate the merge with ordinary updates, delete either account, or add the two portfolios together merely to make the dashboard look right.
 
@@ -86,75 +86,46 @@ Bring IBKR observations into the mapped logical account while creating or matchi
 
 - **Cutoff is feed-specific:** use the latest `source_events.occurred_on` for that IBKR feed and rescan the boundary day. No prior event means pull the widest available history. Overlapping windows are safe because `(account_feed_id, source_key)` is stable.
 - **Window:** choose the smallest connector period covering that cutoff; chain quarter buckets when bootstrapping. If the gap exceeds the connector's reach, ingest what exists and report the uncovered span. The current position snapshot remains an anchor; do not pretend older event history is complete.
-- **For each provider trade, atomically and in dependency order:** upsert its `source_events` identity; find or create the canonical trade; insert the primary/supporting `event_evidence`; then insert or update the raw `trades` row. Set the raw row's `canonical_event_id` only when its source has exactly one evidence link, which is non-aggregate and targets that same canonical row. An aggregate source keeps `canonical_event_id=NULL` and links through `event_evidence` only. Keep all four writes in one batch so no contradictory intermediate state commits. If matching is plausible but uncertain, retain the raw observation and mark the candidate `needs_review` rather than counting both or deleting either.
+- **Each provider trade is one `trade` intent** ([`docs/database-operations.md`](../../docs/database-operations.md)) with evidence `{"feed": "ibkr", "key": "<provider trade id>"}`. The engine writes the source identity, canonical trade, evidence and raw row together; the provider id makes re-runs no-ops. When a wrapper statement already recorded the same fill, pass `same_as_event` (a list when one statement row aggregates several fills). If matching is plausible but uncertain, send `status: "needs_review"` rather than counting both.
 - **Matching is semantic, not amount-only:** compare account, security, side, quantity, price, currency, trade/settlement date, fees, provider ids and aggregation shape. A statement may aggregate several IBKR fills; use `evidence_role='aggregate'` for that deliberate one-to-many relation.
-- **Cash settlement is a separate exact relationship:** a canonical trade derives its cash effect by default. Link a confirmed posted cash event only when it shares account/currency, is dated on or after every covered fill, and equals the signed fill economics within `max(1, fill count)` minor units for rounding (buy `= -(quantity × price_minor) - fees_minor`; sell `= quantity × price_minor - fees_minor`). One cash event may cover several fills; each trade may have only one canonical settlement. Once linked, the cash/trade dates, amounts, security, side, quantity, price, fees, component, currency, and status are immutable. Leave any mismatch or ambiguity unlinked and `needs_review`; never link on amount/date alone.
+- **Cash settlement is a separate exact relationship:** a trade derives its cash effect by default. Link a posted cash event with `trade_settlement` only when it shares account/currency, is dated on or after every covered fill, and equals the signed fill economics within `max(1, fill count)` minor units for rounding (buy `= -(quantity × price_minor) - fees_minor`; sell `= quantity × price_minor - fees_minor`). One cash event may cover several fills; each trade may have only one settlement. Once linked, the economics are immutable. Leave any mismatch or ambiguity unlinked and `needs_review`; never link on amount/date alone.
 - **Map raw and canonical fields consistently:**
-  - `side` (`buy`/`sell`), quantity/shares, per-share `price_minor`, commission `fees_minor`, trade date, currency and security. Keep legacy `external_id` populated for compatibility, but `source_events.source_key` owns idempotency.
+  - `side` (`buy`/`sell`), `shares`, per-share `price`, commission `fees`, trade date, currency and `ticker` (major units; the engine converts). Pass the provider id as `external_id` too for compatibility; the evidence key owns idempotency.
   - **Currency comes from the security, not the trade** — `get_account_trades` carries no currency field. Resolve it from the matched `securities` row (or the symbol's listing / a positions/price lookup), and store both the trade and its security in that currency.
-  - **Minor-unit normalization:** use `findash_core.currencies.major_to_minor` for major-unit amounts and `yahoo_price_to_minor` for quote-unit codes. Store the returned integer with its canonical ISO currency; never hand-apply ×100. See `docs/live-sources.md`.
-  - **Commission sign:** `fees_minor` is a non-negative cost magnitude. If the connector reports commission with cash-ledger sign (for example, a negative debit), take its absolute magnitude exactly once before converting; do not store a negative fee and do not subtract an already-negative value again.
-  - **`securities` upsert by `ticker` with judgment:** reuse an existing security when an IBKR symbol matches one you already hold under a slightly different ticker (match on name/ISIN — e.g. `RR. @LSE` ↔ `RR.LSE`); only create a new row on a genuine first sighting.
+  - **Units:** intents take major units in the canonical ISO currency; a quote-unit code (for example pence) must be converted to its ISO currency first. See `docs/live-sources.md`.
+  - **Commission sign:** the engine stores commission as a cost magnitude whatever sign the connector reports; pass the connector's value once.
+  - **Securities by `ticker`, with judgment:** reuse an existing security when an IBKR symbol matches one you already hold under a slightly different ticker (match on name/ISIN — e.g. `RR. @LSE` ↔ `RR.LSE`); use the existing ticker in your intents. A genuine first sighting is created by the first intent naming it; send a `security` intent first when you know its name or asset class.
   - Re-running the same period finds the same source event and canonical link, so it is a no-op.
 
 ### 4. Positions snapshot — reconcile + bootstrap (judgment, not a row)
 
 Write positions/cash observations to the mapped account. They are **anchors and reconciliation evidence**, not an account-wide fallback mode.
 
-- **Positions:** retain each IBKR observation in `position_evidence`; choose/update the canonical `positions` anchor for `(account, security, date)` only after comparing any wrapper observation. Do not sum two snapshots. Treat omission as zero only when the connector confirms a complete account-wide response and the whole read succeeds; then write deterministic zero-quantity position/evidence anchors for previously held securities that disappeared. Set `account_snapshot_complete=1` on that read's position and balance evidence only when the cash response is also complete and explicit zero cash anchors close omitted prior currencies. A complete account with no positions carries the marker on cash evidence; never create a fake security. Complete holdings with incomplete cash, or any partial, filtered, paginated, or failed read, leaves the flag at `0` and never closes unobserved facts.
+- **One `snapshot` intent per read:** `account`, `as_of`, evidence `{"feed": "ibkr", "key": "ibkr:<as_of>"}`, `cash` (one entry per currency) and `positions` (ticker, quantity, currency, optional `avg_cost`/`price`/`value`). The engine keys each observation `ibkr:<as_of>:cash:<CCY>` / `ibkr:<as_of>:pos:<ticker>`, keeps it as evidence, and selects the anchor; an observation that disagrees with a wrapper's same-day anchor is rejected for you to decide (re-send it as a `balance`/`position` intent with `prefer` once you know which source is right). Never sum two snapshots.
+- **`complete: true` only for a complete read:** the connector confirmed an account-wide response, every holding **and** every cash currency came back, and the whole read succeeded. The engine then writes the zero anchors for previously held securities and previously non-zero cash currencies that IBKR itself reported before and now omits (a wrapper's own wallet, seen only in its statements, is left alone), and marks the evidence complete. Any partial, filtered, paginated or failed read omits `complete` and closes nothing. A complete account with no positions is a snapshot with cash only; never create a fake security.
 - **Short signs:** preserve a short as negative quantity and negative market
   value; keep per-unit market price and average cost non-negative. If the
-  connector reports absolute market value, apply the position sign once before
-  writing `positions`/`position_evidence`.
-- **Cash:** retain each observation in `balance_evidence`; choose/update one canonical `balances` anchor for `(account, date, cash component)`. The NULL-component uniqueness fix applies to plain balances too.
-- **Infer strongly proven funding:** after writing a complete snapshot, compare it
-  with the previous complete per-currency cash snapshot from the same active feed.
-  Reconstruct trades and every confirmed cash movement between them. If the exact
-  remaining positive residual is uniquely explained by confirmed bank-side
-  transfers whose recipient/reference evidence identifies this brokerage, use the
-  fixed `findash_db.py infer-brokerage-funding` operation documented in
-  `docs/database-operations.md`. It creates the positive brokerage legs and retains
-  links to both bank events and both snapshots. Never infer from net liquidation,
-  partial snapshots, amount/date alone, an unlinked legacy bank row, or a residual
-  with another plausible cause.
-- **Reconcile funding consumed by documented FX:** a partial cash snapshot cannot
-  prove funding on its own, but a complete typed FX-conversion document can provide
-  a separate proof path. After privately confirming that an unnormalized bank
-  outflow's recipient/reference identifies this brokerage, use the fixed
-  `reconcile-funding-fx` operation when the positive FX destination amount and
-  authoritative document rate explain the entire source-currency outflow zero to
-  three days earlier within its fixed display-rounding tolerance. This creates the
-  brokerage funding inflow and negative FX source leg while preserving the positive
-  destination leg. Never use amount/date similarity or a partial conversion.
+  connector reports absolute market value, apply the position sign once in the
+  snapshot's `value`.
+- **Funding, conversions and dividends are not inferred here.** The connector has no cash-activity endpoint, so these cash snapshots are the evidence: `findash_db.py reconcile` (sync step 6) compares consecutive snapshots with every recorded movement, confirms expected transfers and dividends that explain the change, and leaves anything ambiguous open for review. Write accurate per-currency cash snapshots; never write a balancing row.
 - **Reconcile:** compare (a) the snapshot's per-symbol quantities against the trade-derived holdings on the mapped account, and (b) `get_account_summary` net-liquidation against Σ(position market values) + Σ(cash), in one currency. Material drift (≳1% — a missed trade, a corporate action, or history beyond the connector window) → **note it** in the summary and one line in `accounts.notes`. **Never** insert a balancing/plug row.
   Also guard against **double-feeding**: if another account's holdings substantially overlap the
   IBKR symbols/quantities (the same portfolio arriving twice — e.g. the wrapper broker's
   statements are also being synced as documents), flag it in the summary and `accounts.notes`.
   Warn, never silently continue.
-- **Dividend residual candidates:** for each currency with two complete cash snapshots,
-  advance the earlier anchor through every confirmed canonical cash event and derived or
-  explicitly linked trade settlement in the interval. The difference between reconstructed
-  and newly observed cash is an unexplained residual; stock-price and position-value changes
-  never explain cash. Compare a material positive residual with modeled distributions for
-  securities held before their entitlement dates, using currency, snapshot interval, expected
-  gross amount, and any plausible separately observed withholding. A close match is a useful
-  dividend candidate, not transaction evidence: report only a count and retain a private
-  reconciliation note. Do not create or confirm a cash event until an activity feed or statement
-  provides the posting.
 
 ### 5. Prices (optional enrichment)
 
-For held symbols Yahoo covers poorly (especially LSE/GBP), pull `get_price_snapshot` / `get_price_history` and write `INSERT OR IGNORE INTO prices (security_id, date, close_minor, currency)`. Yahoo remains the fallback and benchmark source. Prefer writing IBKR prices for historical dates Yahoo does not cover; the separate refresh command only fills price gaps and never overwrites a stored close.
+For held symbols Yahoo covers poorly (especially LSE/GBP), pull `get_price_snapshot` / `get_price_history` and send one `price` intent per close (`ticker`, `date`, `close`, `currency`). Yahoo remains the fallback and benchmark source. Prefer writing IBKR prices for historical dates Yahoo does not cover; the separate refresh command only fills price gaps and never overwrites a stored close.
 
 ### 6. Report + summary
 
 No Drive step: the DB stays local, and sync's weekly backup handles persistence.
 
-On a successful run (probe passed — even with zero new trades), stamp the run journal in the same atomic gateway batch:
+On a successful run (probe passed — even with zero new trades), stamp the run journal in the same atomic request:
 
-```sql
-INSERT INTO meta(key,value) VALUES('last_ibkr_at', datetime('now'))
-ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+```json
+{"type": "meta", "key": "last_ibkr_at", "now": true}
 ```
 
 - Inside `sync-finance-data`, contribute one count-only IBKR line to its stdout report (`📈 IBKR: 4 new trades, positions reconciled`). If a pre-window gap exists, add a second line: `📈 IBKR gap: history before <date> stays screenshot-sourced`.

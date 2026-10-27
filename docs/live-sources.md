@@ -18,7 +18,7 @@ What replaces the audit trail:
 - **Provenance is explicit in `account_feeds` + `source_events`.** The feed identifies the provider account;
   `(account_feed_id, source_key)` identifies the provider event. Re-fetching the same provider id is a no-op.
 - **Canonical events are counted once.** `event_evidence` can attach an IBKR observation and a wrapper-statement
-  observation to the same `canonical_events` row while retaining both raw facts.
+  observation to the same canonical event (`same_as_event` on the intent) while retaining both raw facts.
 - **Snapshots keep evidence too.** Live balance observations attach through `balance_evidence`; they do not
   become a second balance merely because another source reported the same account.
 
@@ -62,10 +62,10 @@ Use only the connector's **read** tools (match by function — exact names vary 
 | read tool (by function) | what it returns | populates |
 |---|---|---|
 | account summary | net-liquidation value, account id(s), base currency | the **probe**; account-feed identity; reconciliation |
-| account trades | per trade: id, symbol, side, size, price, commission, time | `source_events` + raw `trades` + one matched/created `canonical_events` row and `event_evidence`; `securities` on first sighting |
-| account balances / cash | cash by currency | canonical `balances` anchor + `balance_evidence` for the IBKR observation |
-| positions / holdings | holdings: symbol, qty, avg cost, market price, market value, currency | `positions` plus `position_evidence` (one row per holding) — for **reconciliation + bootstrap**, not primary valuation; `securities` on first sighting |
-| price snapshot / history | quotes (esp. LSE/GBP symbols Yahoo prices poorly) | optional `prices` enrichment (`INSERT OR IGNORE`) |
+| account trades | per trade: id, symbol, side, size, price, commission, time | one `trade` intent per fill (evidence = provider trade id); the engine writes source identity, raw trade, canonical trade and evidence, and the security on first sighting |
+| account balances / cash | cash by currency | the `cash` list of one `snapshot` intent (anchor + evidence per currency) |
+| positions / holdings | holdings: symbol, qty, avg cost, market price, market value, currency | the `positions` list of the same `snapshot` intent — for **reconciliation + bootstrap**, not primary valuation; securities created on first sighting |
+| price snapshot / history | quotes (esp. LSE/GBP symbols Yahoo prices poorly) | optional `price` intents (a stored close is never overwritten) |
 
 **Never** call a tool that places/modifies/cancels an order or moves funds — this source is read-only.
 *(An allocation / performance breakdown panel is a possible future enrichment — not yet built.)*
@@ -120,27 +120,15 @@ them to the same logical account only when the evidence says they are one econom
 - **Funding an IBKR account is a transfer, not an expense.** Money moving from a bank into IBKR is
   `category='transfer', flow_type='transfer'`. The bank and brokerage legs are separate canonical account
   events; consolidated spending counts neither.
-- **Complete cash snapshots may prove a missing brokerage leg.** Reconstruct one
-  currency between two complete snapshots from the same active feed. When the full
-  unexplained positive residual is uniquely matched to confirmed bank outflows whose
-  recipient/reference evidence names this brokerage, create the brokerage inflow
-  through the guarded `infer-brokerage-funding` operation. The resulting
-  `inferred_transfer_links` retain the bank event and both snapshot anchors. A
-  portfolio-value bump, partial cash read, or amount/date match alone is never proof.
-- **A complete FX document may prove where reviewed funding went.** When private
-  bank recipient/reference evidence identifies the brokerage and a typed conversion
-  document accounts for the whole source-currency outflow zero to three days later,
-  use the guarded `reconcile-funding-fx` operation. Its link keeps external funding
-  separate from the negative source-currency and positive destination-currency FX
-  legs. A partial screenshot, unexplained remainder, or amount/date match alone is
-  never sufficient.
-- **Cash-snapshot residuals can nominate dividends, not prove them.** Between two complete per-currency
-  cash snapshots, advance the earlier anchor through confirmed cash events and trade settlements. Market
-  price changes never affect cash. A remaining positive residual that aligns with modeled distributions,
-  eligible holdings, currency, timing, and possible withholding is a reconciliation candidate only;
-  interest, fees, tax, FX, transfers, corporate actions, and incomplete history remain alternatives. Keep
-  the candidate private and count-only in reports. Do not write a confirmed dividend transaction without
-  an account-activity or statement observation.
+- **Cash snapshots confirm expected movements; they never invent one.** A bank
+  transfer to the brokerage is recorded as a `transfer` whose brokerage side is an
+  expected leg until observed, and dividends are predicted from ex-dates and
+  holdings as expected events. `findash_db.py reconcile` reconstructs each cash
+  currency between consecutive snapshots and confirms an expected transfer (with
+  the conversion its implied rate shows, when it arrived in another currency) or
+  expected dividends only when exactly one explanation fits. Market price changes
+  never affect cash; any other residual stays an open item for review. See
+  [database-operations.md](./database-operations.md#daily-reconcile).
 - **Currency / minor units.** Store `amount_minor` in the canonical ISO currency's minor unit. Use
   `major_to_minor` for major-unit amounts and `yahoo_price_to_minor` for provider quotes that may already be
   minor units; never hand-apply ×100. Track cash per currency via `component`

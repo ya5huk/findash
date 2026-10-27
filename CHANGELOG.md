@@ -6,7 +6,32 @@ plugin manifest (`.claude-plugin/plugin.json`).
 
 ## [Unreleased]
 
+### Added
+- **Ledger engine: typed intents are the only write path.** Claude describes what
+  a source says — money (`cash`, `transfer`, `fx_conversion`, `trade`,
+  `trade_settlement`, `dividend`, `confirm`, `exclude`) and reference data
+  (`document`, `account`, `feed`, `security`, `price`, `meta`, `balance`,
+  `position`, `snapshot`, `payslip`) — and `findash_db.py apply` derives and writes
+  every row in one transaction. Plain SQL statements are gone; a logged `raw_sql`
+  intent is the escape hatch, and the doctor flags its use.
+- **Snapshots close what they omit.** A complete `snapshot` intent writes the zero
+  anchors for previously held securities and cash currencies itself, and a
+  disagreeing second source is rejected until one is chosen with `prefer`.
+- **Transfers keep both legs.** A side not yet observed becomes an expected leg that
+  does not count until its cash appears.
+- **Conversions keep two rates.** `fx_conversions` stores the user's rate beside the
+  day's market close, so the broker's markup is visible in the forex table.
+- **Daily reconcile.** `findash_db.py reconcile` predicts dividends from ex-dates and
+  holdings, confirms expected transfers, conversions and dividends that uniquely
+  explain a brokerage cash change, and lists what is still open. Sync closes what it
+  can and reports only items stuck for more than seven days.
+
 ### Removed
+- **Single-purpose funding operations.** `infer-brokerage-funding` and
+  `reconcile-funding-fx` (and their modules) are replaced by `transfer` and
+  `fx_conversion` intents plus reconcile. Schema v16 moves their links into
+  `transfer_links` and `fx_conversions`.
+
 - **The Telegram snapshot path is gone.** `send-finance-dashboard`, `scripts/send_telegram.sh`,
   `scripts/render_dashboard.py`, `scripts/bundle-assets.py`, the `templates/` HTML/CSS/JS
   shell, `findash_core.dashboard_html`/`assets`/`script_json`, the `[telegram]` secrets

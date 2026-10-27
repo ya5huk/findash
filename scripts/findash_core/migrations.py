@@ -19,6 +19,7 @@ from .migration_legacy import (
     _migration_1_legacy_baseline,
     _migration_2_normalized_evidence,
 )
+from .migration_ledger_engine import _migration_16_ledger_engine
 from .migration_market import (
     _migration_12_security_distributions,
     _migration_13_market_observations,
@@ -83,6 +84,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "funding_fx_links",
         _migration_15_funding_fx_links,
     ),
+    Migration(16, "ledger_engine", _migration_16_ledger_engine),
 )
 
 
