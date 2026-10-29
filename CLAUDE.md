@@ -82,7 +82,7 @@ These shape every decision in this project. Re-read them when you're about to wr
 - Payslip passwords go under `[pdf-passwords]` in `.secrets/findash`, one `<filename-pattern>=<password>` per line.
 - **Daily sync:** a Claude scheduled task (routine) in the desktop app runs `/findash:sync-finance-data` inside the signed-in session, so the Drive and IBKR connectors are available to it. There is no headless `claude -p` wrapper: claude.ai connectors do not surface there. The task writes the database only.
 - **Hapoalim + Cal auto-fetch (`fetch-bank-data` skill):**
-  1. Node ≥ 22.13.0 required (`israeli-bank-scrapers` engine constraint). Check with `node --version`; if older, `nvm install 22 && nvm use 22`.
+  1. Node ≥ 22.22.2 required (`israeli-bank-scrapers` engine constraint). Check with `node --version`; if older, `nvm install 22 && nvm use 22`.
   2. `scripts/install_node_deps.sh` — runs the lockfile-based `npm ci` install for `israeli-bank-scrapers`, Puppeteer, and its bundled Chromium. One `package.json` covers both companies.
   3. Add Hapoalim credentials to `.secrets/findash` (chmod 600) under `[hapoalim]`:
      ```

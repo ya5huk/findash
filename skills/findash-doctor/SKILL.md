@@ -17,7 +17,7 @@ You audit setup, fix what's safe, print a short scannable report. **Diagnose →
 
 | # | Category | What | Auto-fix? |
 |---|---|---|---|
-| 1 | Binaries | Python ≥3.10; feature-gated `qpdf` and Node ≥22.13.0 | No |
+| 1 | Binaries | Python ≥3.10; feature-gated `qpdf` and Node ≥22.22.2 | No |
 | 2 | Private state | local dirs exist at mode 700; files under `data/`, `inbox/`, `.secrets/`, plus browser-profile files, are mode 600 | `python3 scripts/harden_permissions.py --include-browser-profile` |
 | 3 | Drive connector | when `[drive]` is configured or explicitly selected: the official Google Drive connector's tools are discoverable (ToolSearch by function) in this session | No — print the add-connector steps |
 | 4 | Drive root ID | `.secrets/findash` `[drive]` has a non-placeholder `root_folder_id=` | Perms only |

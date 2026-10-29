@@ -53,16 +53,28 @@ process.umask(0o077);
 let CompanyTypes;
 let createScraper;
 let puppeteer;
+let scraperErrorTypes = new Set();
+
+// The library's errorType is a fixed enum, so it is safe to print; anything
+// else (errorMessage, or an unknown value) can carry provider text and is not.
+function failureClass(result) {
+  return scraperErrorTypes.has(result?.errorType) ? result.errorType : 'UNKNOWN';
+}
 
 async function loadDependencies() {
   try {
-    const [bankModule, puppeteerModule] = await Promise.all([
+    const [bankModule, puppeteerModule, errorsModule] = await Promise.all([
       import('israeli-bank-scrapers'),
       import('puppeteer'),
+      // The package root does not re-export the error enum; a missing module
+      // only degrades failure output to UNKNOWN.
+      import('israeli-bank-scrapers/lib/scrapers/errors.js').catch(() => ({})),
     ]);
     CompanyTypes = bankModule.CompanyTypes ?? bankModule.default?.CompanyTypes;
     createScraper = bankModule.createScraper ?? bankModule.default?.createScraper;
     puppeteer = puppeteerModule.default;
+    const errorTypes = errorsModule.ScraperErrorTypes ?? errorsModule.default?.ScraperErrorTypes;
+    scraperErrorTypes = new Set(Object.values(errorTypes ?? {}));
     if (!CompanyTypes || typeof createScraper !== 'function' || !puppeteer?.launch) {
       throw new Error('unexpected dependency interface');
     }
@@ -573,7 +585,9 @@ async function main() {
   await browser.close().catch(() => {});
 
   if (!result || result.success !== true) {
-    console.error('Scrape failed (provider unavailable or re-authentication required).');
+    console.error(
+      `Scrape failed (provider unavailable or re-authentication required; type ${failureClass(result)}).`,
+    );
     process.exit(1);
   }
 

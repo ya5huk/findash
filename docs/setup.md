@@ -47,7 +47,7 @@ python3 --version
 node --version
 ```
 
-Python 3.10 or newer and Node 22.13 or newer are required. Install the locked React dependencies once:
+Python 3.10 or newer and Node 22.22.2 or newer are required. Install the locked React dependencies once:
 
 ```bash
 scripts/install_dashboard_deps.sh

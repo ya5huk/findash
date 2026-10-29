@@ -146,7 +146,7 @@ For the full setup, read [docs/setup.md](docs/setup.md). The short version:
 ```bash
 python3 --version       # required, >=3.10
 qpdf --version          # password-protected payslips only
-node --version          # React dashboard and automatic bank fetch, >=22.13.0
+node --version          # React dashboard and automatic bank fetch, >=22.22.2
 ```
 
 Python 3.10 or newer is required.
