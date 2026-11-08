@@ -262,6 +262,7 @@ main {
 }
 .chart-ranges button:hover { color: var(--ink); }
 .chart-ranges button[aria-pressed='true'] { border-color: var(--ribbon); color: var(--ink); }
+.market-sort span { color: var(--muted); font-size: 0.72rem; font-style: italic; }
 .empty { color: var(--muted); font-style: italic; margin: 28px 0; }
 
 .quote-tape { border-bottom: 1px solid var(--line); display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 28px; }
@@ -474,12 +475,12 @@ main {
   z-index: 1;
 }
 .expense-ledger-scroll:focus-visible { outline: 1px solid var(--gold); outline-offset: 3px; }
-.expense-monthly {
+.monthly-flow {
   border-top: 1px solid var(--ink);
-  grid-column: 1 / -1;
+  margin-top: 36px;
   padding-top: 22px;
 }
-.expense-monthly h3 {
+.monthly-flow h3 {
   font-family: 'Cormorant Garamond', Georgia, serif;
   font-size: 1rem;
   font-weight: 500;

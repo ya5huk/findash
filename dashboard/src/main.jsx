@@ -331,6 +331,13 @@ function CashFlow({ data }) {
         </tbody>
       </table>
       <p className="flow-note">{dividendNote}</p>
+      <section className="monthly-flow" aria-labelledby="monthly-flow-title">
+        <h3 id="monthly-flow-title">Money in &amp; out — monthly</h3>
+        <MonthlyFlowChart
+          months={data.charts.expenses.monthlyAlltime || []}
+          currency={data.reporting_currency}
+        />
+      </section>
     </>
   )
 }
@@ -761,18 +768,54 @@ function HoldingHistoryModal({ position, history, dates, asOf, onClose }) {
   )
 }
 
+const POSITION_SORTS = [
+  ['value', 'Value', (position) => position.market_usd],
+  ['total-pct', 'Total %', (position) => position.pnl_usd_pct],
+]
+
+function sortedPositions(positions, sortId) {
+  const [, , metric] = POSITION_SORTS.find(([id]) => id === sortId) || POSITION_SORTS[0]
+  // Positions without the metric (e.g. no cost basis) sink to the end.
+  const score = (position) => {
+    const raw = metric(position)
+    const value = raw == null ? NaN : Number(raw)
+    return Number.isFinite(value) ? value : -Infinity
+  }
+  return [...positions].sort((a, b) => score(b) - score(a))
+}
+
 function Markets({ data }) {
   const benchmark = data.charts.stocksVsSpy
   const [selectedKey, setSelectedKey] = useState(null)
+  const [sortId, setSortId] = useState('value')
+  const positions = useMemo(
+    () => sortedPositions(data.positions, sortId),
+    [data.positions, sortId],
+  )
   const selectedPosition = data.positions.find(
     (position) => `${position.account_id}-${position.security_id}` === selectedKey,
   )
   const closeModal = useCallback(() => setSelectedKey(null), [])
   return (
     <>
-      {data.positions.length ? (
+      {positions.length > 1 && (
+        <div className="chart-ranges market-sort" role="group" aria-label="Sort holdings by">
+          <span>Sort</span>
+          {POSITION_SORTS.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={sortId === id}
+              onClick={() => setSortId(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {positions.length ? (
         <div className="market-prices" aria-label="Current holdings and session prices">
-          {data.positions.map((position) => {
+          {positions.map((position) => {
           const change = position.day_change_usd
           const trend = marketTrend(position.day_change_pct)
           const tone = trend.tone
@@ -889,7 +932,6 @@ function Markets({ data }) {
 
 function Expenses({ data }) {
   const categories = data.charts.expenses.categories30 || []
-  const monthly = data.charts.expenses.monthlyAlltime || []
   return (
     <div className="expense-layout">
       <div>
@@ -921,10 +963,6 @@ function Expenses({ data }) {
           </table>
         </div>
       </div>
-      <section className="expense-monthly" aria-labelledby="expense-monthly-title">
-        <h3 id="expense-monthly-title">Money in &amp; out — monthly</h3>
-        <MonthlyFlowChart months={monthly} currency={data.reporting_currency} />
-      </section>
     </div>
   )
 }
